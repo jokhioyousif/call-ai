@@ -1,0 +1,7 @@
+{
+  "name": "TelcoVoice AI Assistant",
+  "description": "A high-performance real-time voice assistant for telecommunications, supporting multiple dialects including Saudi, Emirati, Iraqi, Jordanian, and English.",
+  "requestFramePermissions": [
+    "microphone"
+  ]
+}
