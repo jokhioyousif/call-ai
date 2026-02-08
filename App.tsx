@@ -30,16 +30,18 @@ function encode(bytes: Uint8Array) {
 }
 
 async function decodeAudioData(data: Uint8Array, ctx: AudioContext, sampleRate: number, numChannels: number): Promise<AudioBuffer> {
-  const dataInt16 = new Int16Array(data.buffer);
+  // Ensure the byte buffer length is even for Int16Array
+  const buffer = data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength);
+  const dataInt16 = new Int16Array(buffer);
   const frameCount = dataInt16.length / numChannels;
-  const buffer = ctx.createBuffer(numChannels, frameCount, sampleRate);
+  const audioBuffer = ctx.createBuffer(numChannels, frameCount, sampleRate);
   for (let channel = 0; channel < numChannels; channel++) {
-    const channelData = buffer.getChannelData(channel);
+    const channelData = audioBuffer.getChannelData(channel);
     for (let i = 0; i < frameCount; i++) {
       channelData[i] = dataInt16[i * numChannels + channel] / 32768.0;
     }
   }
-  return buffer;
+  return audioBuffer;
 }
 
 function createBlob(data: Float32Array): GenAIBlob {
@@ -96,14 +98,13 @@ const App: React.FC = () => {
   const logCounter = useRef(0);
 
   useEffect(() => {
-    console.log("[DEBUG] API Key Check:", process.env.API_KEY ? "EXISTS" : "MISSING");
     if (transcriptScrollRef.current) {
       transcriptScrollRef.current.scrollTop = transcriptScrollRef.current.scrollHeight;
     }
   }, [messages, liveUserSpeech, liveAssistantSpeech]);
 
   const stopSession = useCallback(() => {
-    console.log("[DEBUG] Stopping session...");
+    console.log("[DEBUG] Stopping session and cleaning up resources...");
     if (sessionRef.current) {
       try { sessionRef.current.close(); } catch(e) {}
       sessionRef.current = null;
@@ -129,12 +130,12 @@ const App: React.FC = () => {
   }, []);
 
   const startSession = useCallback(async (dialect: DialectConfig) => {
-    console.log("[DEBUG] Attempting to start session for:", dialect.label);
+    console.log("[DEBUG] Starting new session for:", dialect.label);
     setErrorMsg(null);
     setStatus('thinking');
 
     if (!process.env.API_KEY) {
-      const err = "API Key is missing. Ensure the API_KEY environment variable is set on Railway.";
+      const err = "API Key is missing. Check Railway environment variables.";
       console.error("[DEBUG]", err);
       setErrorMsg(err);
       setStatus('idle');
@@ -142,23 +143,21 @@ const App: React.FC = () => {
     }
 
     try {
-      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-        throw new Error("Your browser does not support microphone access.");
-      }
-
-      console.log("[DEBUG] Initializing AudioContexts...");
       const inputCtx = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: AUDIO_SAMPLE_RATE_INPUT });
       const outputCtx = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: AUDIO_SAMPLE_RATE_OUTPUT });
+      
+      // Resume contexts immediately to avoid "suspended" state issues in browsers
+      await inputCtx.resume();
+      await outputCtx.resume();
+      
       inputAudioContextRef.current = inputCtx;
       outputAudioContextRef.current = outputCtx;
 
-      console.log("[DEBUG] Requesting Microphone access...");
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       mediaStreamRef.current = stream;
       console.log("[DEBUG] Microphone access granted.");
 
       const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-      console.log("[DEBUG] Connecting to Live API...");
       
       const sessionPromise = ai.live.connect({
         model: 'gemini-2.5-flash-native-audio-preview-12-2025',
@@ -171,29 +170,27 @@ const App: React.FC = () => {
         },
         callbacks: {
           onopen: () => {
-            console.log("[DEBUG] Connection established (onopen)");
+            console.log("[DEBUG] WebSocket Connected (onopen)");
             setIsConnected(true);
             setStatus('listening');
             nextStartTimeRef.current = 0;
             
-            console.log("[DEBUG] Starting audio capture and streaming...");
+            // Nudge the model to speak the initial greeting
+            sessionPromise.then(session => {
+              if (session) {
+                console.log("[DEBUG] Sending initial nudge text to trigger greeting.");
+                session.sendRealtimeInput({ text: "hello" });
+              }
+            });
+
             const source = inputCtx.createMediaStreamSource(stream);
             const scriptProcessor = inputCtx.createScriptProcessor(2048, 1, 1);
             
             scriptProcessor.onaudioprocess = (e) => {
               const inputData = e.inputBuffer.getChannelData(0);
               const pcmBlob = createBlob(inputData);
-              
-              // Only log a fraction of chunks to avoid flooding the console
-              logCounter.current++;
-              if (logCounter.current % 100 === 0) {
-                console.log("[DEBUG] Sending audio chunk count:", logCounter.current);
-              }
-
               sessionPromise.then((session) => {
                 if (session) session.sendRealtimeInput({ media: pcmBlob });
-              }).catch(err => {
-                console.error("[DEBUG] Failed to send realtime input:", err);
               });
             };
             
@@ -201,7 +198,7 @@ const App: React.FC = () => {
             scriptProcessor.connect(inputCtx.destination);
           },
           onmessage: async (message: LiveServerMessage) => {
-            console.log("[DEBUG] Received message from model:", message);
+            console.log("[DEBUG] Model Message Keys:", Object.keys(message));
             
             if (message.serverContent?.outputTranscription) {
               currentOutputTranscription.current += message.serverContent.outputTranscription.text;
@@ -212,17 +209,13 @@ const App: React.FC = () => {
             }
 
             if (message.serverContent?.turnComplete) {
-              console.log("[DEBUG] Turn complete. Final User Text:", currentInputTranscription.current);
-              console.log("[DEBUG] Turn complete. Final Assistant Text:", currentOutputTranscription.current);
-              
-              const userText = currentInputTranscription.current.trim();
-              const assistantText = currentOutputTranscription.current.trim();
-              
-              if (userText || assistantText) {
+              const u = currentInputTranscription.current.trim();
+              const a = currentOutputTranscription.current.trim();
+              if (u || a) {
                 setMessages(prev => [
                   ...prev,
-                  ...(userText ? [{ role: 'user' as const, text: userText, timestamp: Date.now() }] : []),
-                  ...(assistantText ? [{ role: 'assistant' as const, text: assistantText, timestamp: Date.now() }] : [])
+                  ...(u ? [{ role: 'user' as const, text: u, timestamp: Date.now() }] : []),
+                  ...(a ? [{ role: 'assistant' as const, text: a, timestamp: Date.now() }] : [])
                 ]);
               }
               currentInputTranscription.current = '';
@@ -236,31 +229,24 @@ const App: React.FC = () => {
             if (modelTurn?.parts) {
               for (const part of modelTurn.parts) {
                 if (part.inlineData?.data) {
-                  console.log("[DEBUG] Model provided audio chunk. Playing...");
                   setStatus('speaking');
-                  const base64Audio = part.inlineData.data;
-                  nextStartTimeRef.current = Math.max(nextStartTimeRef.current, outputCtx.currentTime);
-                  const audioData = decode(base64Audio);
+                  const audioData = decode(part.inlineData.data);
                   const audioBuffer = await decodeAudioData(audioData, outputCtx, AUDIO_SAMPLE_RATE_OUTPUT, 1);
                   const source = outputCtx.createBufferSource();
                   source.buffer = audioBuffer;
                   source.connect(outputCtx.destination);
                   source.onended = () => {
                     sourcesRef.current.delete(source);
-                    if (sourcesRef.current.size === 0) {
-                       console.log("[DEBUG] Audio playback finished.");
-                       setStatus('listening');
-                    }
+                    if (sourcesRef.current.size === 0) setStatus('listening');
                   };
-                  source.start(nextStartTimeRef.current);
-                  nextStartTimeRef.current += audioBuffer.duration;
+                  source.start(Math.max(nextStartTimeRef.current, outputCtx.currentTime));
+                  nextStartTimeRef.current = Math.max(nextStartTimeRef.current, outputCtx.currentTime) + audioBuffer.duration;
                   sourcesRef.current.add(source);
                 }
               }
             }
 
             if (message.serverContent?.interrupted) {
-              console.log("[DEBUG] Conversation interrupted by user.");
               sourcesRef.current.forEach(s => { try { s.stop(); } catch(e) {} });
               sourcesRef.current.clear();
               nextStartTimeRef.current = 0;
@@ -269,26 +255,21 @@ const App: React.FC = () => {
             }
           },
           onerror: (e) => { 
-            console.error('[DEBUG] Session connection error:', e); 
-            setErrorMsg("Connection error. Ensure your API key is valid and you are online.");
+            console.error('[DEBUG] Live API Error:', e); 
+            setErrorMsg("Connection issue detected.");
             stopSession(); 
           },
           onclose: (e) => { 
-            console.log("[DEBUG] Session connection closed:", e);
+            console.log("[DEBUG] Live API Connection Closed:", e.code, e.reason);
             setIsConnected(false); 
             setStatus('idle'); 
           }
         }
       });
       sessionRef.current = await sessionPromise;
-      console.log("[DEBUG] sessionRef assigned.");
     } catch (err: any) {
-      console.error('[DEBUG] Global startSession error:', err);
-      if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') {
-        setErrorMsg("Microphone access denied. Please grant permission in your browser.");
-      } else {
-        setErrorMsg(err.message || "Failed to start conversation.");
-      }
+      console.error('[DEBUG] Start session failed:', err);
+      setErrorMsg(err.message || "Failed to connect.");
       setStatus('idle');
       stopSession();
     }
@@ -308,7 +289,7 @@ const App: React.FC = () => {
     }
   };
 
-  // --- Tool Handlers ---
+  // --- STT / TTS Tool Handlers ---
   const handleSttRecord = async () => {
     if (sttRecording) {
       mediaRecorderRef.current?.stop();
@@ -332,10 +313,7 @@ const App: React.FC = () => {
         recorder.start();
         mediaRecorderRef.current = recorder;
         setSttRecording(true);
-      } catch (err) {
-        console.error("[DEBUG] STT Recording error:", err);
-        alert("Microphone access failed.");
-      }
+      } catch (err) { alert("Microphone failed."); }
     }
   };
 
@@ -349,17 +327,12 @@ const App: React.FC = () => {
         contents: {
           parts: [
             { inlineData: { mimeType: 'audio/webm', data: sttAudioBase64 } },
-            { text: `Transcribe this audio strictly. Language: ${currentDialect.label}. Output only the transcript.` }
+            { text: `Transcribe this audio strictly. Language: ${currentDialect.label}.` }
           ]
         }
       });
-      setSttTranscript(response.text || "No transcription found.");
-    } catch (err) {
-      console.error("[DEBUG] Transcription error:", err);
-      setSttTranscript("Transcription error.");
-    } finally {
-      setSttLoading(false);
-    }
+      setSttTranscript(response.text || "No transcription.");
+    } catch (err) { setSttTranscript("Error."); } finally { setSttLoading(false); }
   };
 
   const handleTtsGenerate = async () => {
@@ -369,28 +342,23 @@ const App: React.FC = () => {
       const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
       const response = await ai.models.generateContent({
         model: "gemini-2.5-flash-preview-tts",
-        contents: [{ parts: [{ text: `Speak this text as ${currentDialect.label}: ${ttsInput}` }] }],
+        contents: [{ parts: [{ text: ttsInput }] }],
         config: {
           responseModalities: [Modality.AUDIO],
           speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Kore' } } },
         },
       });
-      const base64Audio = response.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
-      if (base64Audio) {
-        const ctx = new (window.AudioContext || (window as any).webkitAudioContext)();
-        const audioBuffer = await decodeAudioData(decode(base64Audio), ctx, 24000, 1);
-        const source = ctx.createBufferSource();
-        source.buffer = audioBuffer;
-        source.connect(ctx.destination);
-        source.start();
-        setTtsAudioStatus("Playing generated audio...");
+      const b64 = response.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
+      if (b64) {
+        const ctx = new AudioContext();
+        const buf = await decodeAudioData(decode(b64), ctx, 24000, 1);
+        const src = ctx.createBufferSource();
+        src.buffer = buf;
+        src.connect(ctx.destination);
+        src.start();
+        setTtsAudioStatus("Playing...");
       }
-    } catch (err) {
-      console.error("[DEBUG] TTS error:", err);
-      alert("Error generating speech.");
-    } finally {
-      setTtsLoading(false);
-    }
+    } catch (err) { alert("TTS Failed."); } finally { setTtsLoading(false); }
   };
 
   const handleTranslate = async () => {
@@ -400,15 +368,10 @@ const App: React.FC = () => {
       const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
       const response = await ai.models.generateContent({
         model: 'gemini-3-flash-preview',
-        contents: `Translate to ${translateTarget === 'ar' ? 'Arabic' : translateTarget === 'ur' ? 'Urdu' : translateTarget === 'hi' ? 'Hindi' : 'English'}: "${translateInput}"`
+        contents: `Translate to ${translateTarget}: "${translateInput}"`
       });
-      setTranslateResult(response.text || "Translation error.");
-    } catch (err) {
-      console.error("[DEBUG] Translation error:", err);
-      setTranslateResult("Translation error.");
-    } finally {
-      setTranslateLoading(false);
-    }
+      setTranslateResult(response.text || "Error.");
+    } catch (err) { setTranslateResult("Error."); } finally { setTranslateLoading(false); }
   };
 
   return (
@@ -431,11 +394,10 @@ const App: React.FC = () => {
         <div className="hero-content">
           <span className="hero-badge">WE BUILD</span>
           <h1 className="hero-title">
-            AI Models<br />
-            That Master<br />
+            AI Models<br />Mastering<br />
             <span className="gradient-text">Arabic Dialects</span>
           </h1>
-          <p className="hero-subtitle">For Those Who Never Compromise On Quality</p>
+          <p className="hero-subtitle">Telecommunications & Hospital AI Intelligence</p>
           <div className="hero-buttons">
             <a href="#tools" className="btn btn-primary" onClick={() => setActiveTab('stt')}>Try AI Tools</a>
             <a href="#agent" className="btn btn-secondary" onClick={() => setActiveTab('agent')}>Talk to Agent</a>
@@ -448,11 +410,6 @@ const App: React.FC = () => {
       </section>
 
       <section id="tools" className="tools-section">
-        <div className="section-header">
-          <span className="section-badge">Our Models</span>
-          <h2>Revolutionizing Arabic dialects<br />with AI speech intelligence</h2>
-        </div>
-
         <div className="tool-tabs">
           <button className={`tab-btn ${activeTab === 'stt' ? 'active' : ''}`} onClick={() => setActiveTab('stt')}>Speech To Text</button>
           <button className={`tab-btn ${activeTab === 'tts' ? 'active' : ''}`} onClick={() => setActiveTab('tts')}>Text To Speech</button>
@@ -464,25 +421,18 @@ const App: React.FC = () => {
             <div className="tool-input-area">
               <h3>Voice</h3>
               <div className="audio-upload-zone">
-                <div className="upload-icon">🎤</div>
                 <p>{sttAudioBase64 ? "Audio Captured" : "Record your query"}</p>
-                <div className="upload-buttons">
-                  <button onClick={handleSttRecord} className={`btn ${sttRecording ? 'btn-danger' : 'btn-accent'}`}>
-                    {sttRecording ? 'Stop' : 'Record'}
-                  </button>
-                  {sttAudioBase64 && <button onClick={() => setSttAudioBase64(null)} className="btn btn-outline">Clear</button>}
-                </div>
+                <button onClick={handleSttRecord} className={`btn ${sttRecording ? 'btn-danger' : 'btn-accent'}`}>
+                  {sttRecording ? 'Stop' : 'Record'}
+                </button>
               </div>
               <button onClick={handleTranscribe} className="btn btn-primary btn-full" disabled={!sttAudioBase64 || sttLoading}>
-                {sttLoading ? 'Transcribing...' : 'Transcribe Audio'}
+                {sttLoading ? 'Transcribing...' : 'Transcribe'}
               </button>
             </div>
             <div className="tool-output-area">
               <h3>Transcript</h3>
-              <div className="transcript-box">
-                {sttTranscript || <p className="placeholder-text">Output text will appear here...</p>}
-              </div>
-              {sttTranscript && <button onClick={() => navigator.clipboard.writeText(sttTranscript)} className="btn btn-outline btn-small copy-btn">Copy Text</button>}
+              <div className="transcript-box">{sttTranscript || "Output here..."}</div>
             </div>
           </div>
         </div>
@@ -490,22 +440,11 @@ const App: React.FC = () => {
         <div className={`tool-panel ${activeTab === 'tts' ? 'active' : ''}`}>
           <div className="tool-grid">
             <div className="tool-input-area">
-              <h3>Text</h3>
-              <textarea 
-                value={ttsInput}
-                onChange={(e) => setTtsInput(e.target.value)}
-                placeholder="Enter text for high-quality TTS..." 
-                rows={6}
-              ></textarea>
-              <button onClick={handleTtsGenerate} className="btn btn-primary btn-full" disabled={ttsLoading}>
-                {ttsLoading ? 'Processing...' : 'Generate & Play'}
-              </button>
+              <textarea value={ttsInput} onChange={(e) => setTtsInput(e.target.value)} placeholder="Text for TTS..." rows={4}></textarea>
+              <button onClick={handleTtsGenerate} className="btn btn-primary btn-full" disabled={ttsLoading}>Generate & Play</button>
             </div>
             <div className="tool-output-area">
-              <h3>Audio Output</h3>
-              <div className="audio-output-box">
-                {ttsAudioStatus || <p className="placeholder-text">Generated audio status will appear here...</p>}
-              </div>
+              <div className="audio-output-box">{ttsAudioStatus || "Audio status..."}</div>
             </div>
           </div>
         </div>
@@ -513,145 +452,60 @@ const App: React.FC = () => {
         <div className={`tool-panel ${activeTab === 'translate' ? 'active' : ''}`}>
           <div className="tool-grid">
             <div className="tool-input-area">
-              <h3>Source Text</h3>
-              <textarea 
-                value={translateInput}
-                onChange={(e) => setTranslateInput(e.target.value)}
-                placeholder="Enter text to translate..." 
-                rows={6}
-              ></textarea>
-              <div className="language-select-tool">
-                <label>Target Language:</label>
-                <select value={translateTarget} onChange={(e) => setTranslateTarget(e.target.value)}>
-                  <option value="ar">Arabic</option>
-                  <option value="en">English</option>
-                  <option value="ur">Urdu</option>
-                  <option value="hi">Hindi</option>
-                </select>
-              </div>
-              <button onClick={handleTranslate} className="btn btn-primary btn-full" disabled={translateLoading}>
-                {translateLoading ? 'Translating...' : 'Translate'}
-              </button>
+              <textarea value={translateInput} onChange={(e) => setTranslateInput(e.target.value)} placeholder="Translate..." rows={4}></textarea>
+              <select value={translateTarget} onChange={(e) => setTranslateTarget(e.target.value)}>
+                <option value="ar">Arabic</option><option value="en">English</option>
+              </select>
+              <button onClick={handleTranslate} className="btn btn-primary btn-full" disabled={translateLoading}>Translate</button>
             </div>
             <div className="tool-output-area">
-              <h3>Translation</h3>
-              <div className="transcript-box">
-                {translateResult || <p className="placeholder-text">Translated text will appear here...</p>}
-              </div>
+              <div className="transcript-box">{translateResult || "Result here..."}</div>
             </div>
           </div>
         </div>
       </section>
 
       <section id="agent" className="agent-section">
-        <div className="section-header">
-          <span className="section-badge">Voice Solutions</span>
-          <h2>Talk to Our AI Voice Agent</h2>
-          <p>Real-time voice assistant for Telecom & Hospital support</p>
-          {errorMsg && (
-            <div style={{
-              background: '#fee2e2',
-              border: '1px solid var(--danger)',
-              padding: '1rem',
-              borderRadius: '8px',
-              color: 'var(--danger)',
-              marginTop: '1.5rem',
-              textAlign: 'left',
-              maxWidth: '600px',
-              margin: '1.5rem auto 0'
-            }}>
-              <strong>⚠️ {errorMsg}</strong>
-            </div>
-          )}
-        </div>
-
         <div className="agent-container">
           <div className="agent-card">
             <div className="agent-header">
-              <div className="agent-avatar"><span>🤖</span></div>
+              <div className="agent-avatar">🤖</div>
               <div className="agent-info">
                 <h3>Saudi Voice Agent</h3>
-                <p>Multi-dialect Specialist</p>
+                <p>{currentDialect.label} Specialist</p>
               </div>
               <div className="status-pill">
-                <span className={`status-dot ${isConnected ? (status === 'speaking' ? 'speaking' : 'connected') : ''}`}></span>
-                <span>{isConnected ? (status === 'thinking' ? 'Thinking...' : status === 'speaking' ? 'Speaking' : 'Listening') : 'Ready'}</span>
+                <span className={`status-dot ${isConnected ? 'connected' : ''} ${status === 'speaking' ? 'speaking' : ''}`}></span>
+                <span>{isConnected ? status.toUpperCase() : 'READY'}</span>
               </div>
             </div>
 
             <div className="agent-controls">
-              <div className="language-select-tool">
-                <label>Select Dialect:</label>
-                <select value={currentDialect.id} onChange={(e) => handleDialectChange(e.target.value as Language)}>
-                  {DIALECTS.map(d => (
-                    <option key={d.id} value={d.id}>{d.label} {d.flag}</option>
-                  ))}
-                </select>
-              </div>
-              <div className="agent-buttons">
-                {!isConnected ? (
-                  <button onClick={toggleConnection} className="btn btn-accent btn-large btn-full">🎙️ Start Conversation</button>
-                ) : (
-                  <button onClick={toggleConnection} className="btn btn-outline btn-large btn-full">⏹️ End Call</button>
-                )}
-              </div>
+              <select value={currentDialect.id} onChange={(e) => handleDialectChange(e.target.value as Language)}>
+                {DIALECTS.map(d => <option key={d.id} value={d.id}>{d.label} {d.flag}</option>)}
+              </select>
+              <button onClick={toggleConnection} className={`btn btn-full btn-large ${isConnected ? 'btn-outline' : 'btn-accent'}`}>
+                {isConnected ? '⏹️ End Call' : '🎙️ Start Conversation'}
+              </button>
             </div>
 
             <div className={`voice-visualizer ${isConnected ? 'active' : ''}`}>
-               {[...Array(5)].map((_, i) => (
-                 <div 
-                   key={i} 
-                   className="visualizer-bar" 
-                   style={{ 
-                     animationDelay: `${i * 0.1}s`, 
-                     height: isConnected ? (status === 'speaking' || status === 'listening' ? '80%' : '10%') : '10%' 
-                   }}
-                 ></div>
-               ))}
+               {[...Array(5)].map((_, i) => <div key={i} className="visualizer-bar"></div>)}
             </div>
 
             <div ref={transcriptScrollRef} className="conversation-area">
-              {messages.length === 0 && !liveUserSpeech && !liveAssistantSpeech && (
-                <div className="conversation-placeholder">
-                  <p>Click "Start Conversation" to begin</p>
-                  <p className="hint">Ask about telecom billing, hospital bookings, and more.</p>
-                </div>
-              )}
-              
               {messages.map((msg, idx) => (
-                <div key={idx} className={`message ${msg.role === 'user' ? 'user' : 'assistant'}`}>
-                  <div className="message-label">{msg.role === 'user' ? 'You' : 'Agent'}</div>
+                <div key={idx} className={`message ${msg.role}`}>
+                  <div className="message-label">{msg.role.toUpperCase()}</div>
                   <div className="message-text" dir="auto">{msg.text}</div>
                 </div>
               ))}
-
-              {liveUserSpeech && (
-                <div className="message user opacity-70 italic">
-                  <div className="message-label">You</div>
-                  <div className="message-text" dir="auto">{liveUserSpeech}...</div>
-                </div>
-              )}
-
-              {liveAssistantSpeech && (
-                <div className="message assistant speaking">
-                  <div className="message-label">Agent</div>
-                  <div className="message-text" dir="auto">{liveAssistantSpeech}</div>
-                </div>
-              )}
+              {liveUserSpeech && <div className="message user opacity-50"><i>{liveUserSpeech}...</i></div>}
+              {liveAssistantSpeech && <div className="message assistant"><b>Agent:</b> {liveAssistantSpeech}</div>}
             </div>
           </div>
         </div>
       </section>
-
-      <footer className="footer">
-        <div className="footer-content">
-          <div className="logo">
-            <span className="logo-icon">🎙️</span>
-            <span className="logo-text">Saudi Voice Agent</span>
-          </div>
-          <p>AI Speech Intelligence for Arabic Dialects & Regional Support</p>
-        </div>
-      </footer>
     </div>
   );
 };
