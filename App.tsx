@@ -4,7 +4,6 @@ import { GoogleGenAI, LiveServerMessage, Modality, Type, GenerateContentResponse
 import { Language, DialectConfig, Message } from './types';
 import { DIALECTS, AUDIO_SAMPLE_RATE_INPUT, AUDIO_SAMPLE_RATE_OUTPUT } from './constants';
 
-// Define the Blob interface locally as the ESM export from @google/genai might vary
 interface GenAIBlob {
   data: string;
   mimeType: string;
@@ -57,7 +56,7 @@ function createBlob(data: Float32Array): GenAIBlob {
 
 const App: React.FC = () => {
   const [activeTab, setActiveTab] = useState<'stt' | 'tts' | 'translate' | 'agent'>('agent');
-  const [currentDialect, setCurrentDialect] = useState<DialectConfig>(DIALECTS[1]); 
+  const [currentDialect, setCurrentDialect] = useState<DialectConfig>(DIALECTS[0]); 
   const [isConnected, setIsConnected] = useState(false);
   const [status, setStatus] = useState<'idle' | 'listening' | 'thinking' | 'speaking'>('idle');
   const [messages, setMessages] = useState<Message[]>([]);
@@ -94,14 +93,17 @@ const App: React.FC = () => {
   const currentInputTranscription = useRef('');
   const currentOutputTranscription = useRef('');
   const transcriptScrollRef = useRef<HTMLDivElement>(null);
+  const logCounter = useRef(0);
 
   useEffect(() => {
+    console.log("[DEBUG] API Key Check:", process.env.API_KEY ? "EXISTS" : "MISSING");
     if (transcriptScrollRef.current) {
       transcriptScrollRef.current.scrollTop = transcriptScrollRef.current.scrollHeight;
     }
   }, [messages, liveUserSpeech, liveAssistantSpeech]);
 
   const stopSession = useCallback(() => {
+    console.log("[DEBUG] Stopping session...");
     if (sessionRef.current) {
       try { sessionRef.current.close(); } catch(e) {}
       sessionRef.current = null;
@@ -127,24 +129,37 @@ const App: React.FC = () => {
   }, []);
 
   const startSession = useCallback(async (dialect: DialectConfig) => {
+    console.log("[DEBUG] Attempting to start session for:", dialect.label);
     setErrorMsg(null);
     setStatus('thinking');
+
+    if (!process.env.API_KEY) {
+      const err = "API Key is missing. Ensure the API_KEY environment variable is set on Railway.";
+      console.error("[DEBUG]", err);
+      setErrorMsg(err);
+      setStatus('idle');
+      return;
+    }
 
     try {
       if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
         throw new Error("Your browser does not support microphone access.");
       }
 
-      // AudioContext must be created after a user gesture
+      console.log("[DEBUG] Initializing AudioContexts...");
       const inputCtx = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: AUDIO_SAMPLE_RATE_INPUT });
       const outputCtx = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: AUDIO_SAMPLE_RATE_OUTPUT });
       inputAudioContextRef.current = inputCtx;
       outputAudioContextRef.current = outputCtx;
 
+      console.log("[DEBUG] Requesting Microphone access...");
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       mediaStreamRef.current = stream;
+      console.log("[DEBUG] Microphone access granted.");
 
       const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+      console.log("[DEBUG] Connecting to Live API...");
+      
       const sessionPromise = ai.live.connect({
         model: 'gemini-2.5-flash-native-audio-preview-12-2025',
         config: {
@@ -156,22 +171,38 @@ const App: React.FC = () => {
         },
         callbacks: {
           onopen: () => {
+            console.log("[DEBUG] Connection established (onopen)");
             setIsConnected(true);
             setStatus('listening');
             nextStartTimeRef.current = 0;
+            
+            console.log("[DEBUG] Starting audio capture and streaming...");
             const source = inputCtx.createMediaStreamSource(stream);
             const scriptProcessor = inputCtx.createScriptProcessor(2048, 1, 1);
+            
             scriptProcessor.onaudioprocess = (e) => {
               const inputData = e.inputBuffer.getChannelData(0);
               const pcmBlob = createBlob(inputData);
+              
+              // Only log a fraction of chunks to avoid flooding the console
+              logCounter.current++;
+              if (logCounter.current % 100 === 0) {
+                console.log("[DEBUG] Sending audio chunk count:", logCounter.current);
+              }
+
               sessionPromise.then((session) => {
                 if (session) session.sendRealtimeInput({ media: pcmBlob });
+              }).catch(err => {
+                console.error("[DEBUG] Failed to send realtime input:", err);
               });
             };
+            
             source.connect(scriptProcessor);
             scriptProcessor.connect(inputCtx.destination);
           },
           onmessage: async (message: LiveServerMessage) => {
+            console.log("[DEBUG] Received message from model:", message);
+            
             if (message.serverContent?.outputTranscription) {
               currentOutputTranscription.current += message.serverContent.outputTranscription.text;
               setLiveAssistantSpeech(currentOutputTranscription.current);
@@ -181,8 +212,12 @@ const App: React.FC = () => {
             }
 
             if (message.serverContent?.turnComplete) {
+              console.log("[DEBUG] Turn complete. Final User Text:", currentInputTranscription.current);
+              console.log("[DEBUG] Turn complete. Final Assistant Text:", currentOutputTranscription.current);
+              
               const userText = currentInputTranscription.current.trim();
               const assistantText = currentOutputTranscription.current.trim();
+              
               if (userText || assistantText) {
                 setMessages(prev => [
                   ...prev,
@@ -201,6 +236,7 @@ const App: React.FC = () => {
             if (modelTurn?.parts) {
               for (const part of modelTurn.parts) {
                 if (part.inlineData?.data) {
+                  console.log("[DEBUG] Model provided audio chunk. Playing...");
                   setStatus('speaking');
                   const base64Audio = part.inlineData.data;
                   nextStartTimeRef.current = Math.max(nextStartTimeRef.current, outputCtx.currentTime);
@@ -211,7 +247,10 @@ const App: React.FC = () => {
                   source.connect(outputCtx.destination);
                   source.onended = () => {
                     sourcesRef.current.delete(source);
-                    if (sourcesRef.current.size === 0) setStatus('listening');
+                    if (sourcesRef.current.size === 0) {
+                       console.log("[DEBUG] Audio playback finished.");
+                       setStatus('listening');
+                    }
                   };
                   source.start(nextStartTimeRef.current);
                   nextStartTimeRef.current += audioBuffer.duration;
@@ -221,6 +260,7 @@ const App: React.FC = () => {
             }
 
             if (message.serverContent?.interrupted) {
+              console.log("[DEBUG] Conversation interrupted by user.");
               sourcesRef.current.forEach(s => { try { s.stop(); } catch(e) {} });
               sourcesRef.current.clear();
               nextStartTimeRef.current = 0;
@@ -229,23 +269,25 @@ const App: React.FC = () => {
             }
           },
           onerror: (e) => { 
-            console.error('Session error:', e); 
-            setErrorMsg("Connection error. Check your API key and network.");
+            console.error('[DEBUG] Session connection error:', e); 
+            setErrorMsg("Connection error. Ensure your API key is valid and you are online.");
             stopSession(); 
           },
-          onclose: () => { 
+          onclose: (e) => { 
+            console.log("[DEBUG] Session connection closed:", e);
             setIsConnected(false); 
             setStatus('idle'); 
           }
         }
       });
       sessionRef.current = await sessionPromise;
+      console.log("[DEBUG] sessionRef assigned.");
     } catch (err: any) {
-      console.error('Session Error:', err);
+      console.error('[DEBUG] Global startSession error:', err);
       if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') {
-        setErrorMsg("Microphone access denied. Please allow microphone permissions in your browser settings and try again.");
+        setErrorMsg("Microphone access denied. Please grant permission in your browser.");
       } else {
-        setErrorMsg(err.message || "Could not start session.");
+        setErrorMsg(err.message || "Failed to start conversation.");
       }
       setStatus('idle');
       stopSession();
@@ -258,7 +300,7 @@ const App: React.FC = () => {
   };
 
   const handleDialectChange = (lang: Language) => {
-    const dialect = DIALECTS.find(d => d.id === lang) || DIALECTS[1];
+    const dialect = DIALECTS.find(d => d.id === lang) || DIALECTS[0];
     setCurrentDialect(dialect);
     if (isConnected) {
       stopSession();
@@ -291,7 +333,8 @@ const App: React.FC = () => {
         mediaRecorderRef.current = recorder;
         setSttRecording(true);
       } catch (err) {
-        alert("Microphone access failed for STT recording.");
+        console.error("[DEBUG] STT Recording error:", err);
+        alert("Microphone access failed.");
       }
     }
   };
@@ -312,6 +355,7 @@ const App: React.FC = () => {
       });
       setSttTranscript(response.text || "No transcription found.");
     } catch (err) {
+      console.error("[DEBUG] Transcription error:", err);
       setSttTranscript("Transcription error.");
     } finally {
       setSttLoading(false);
@@ -342,6 +386,7 @@ const App: React.FC = () => {
         setTtsAudioStatus("Playing generated audio...");
       }
     } catch (err) {
+      console.error("[DEBUG] TTS error:", err);
       alert("Error generating speech.");
     } finally {
       setTtsLoading(false);
@@ -359,6 +404,7 @@ const App: React.FC = () => {
       });
       setTranslateResult(response.text || "Translation error.");
     } catch (err) {
+      console.error("[DEBUG] Translation error:", err);
       setTranslateResult("Translation error.");
     } finally {
       setTranslateLoading(false);
