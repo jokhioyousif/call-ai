@@ -9,7 +9,7 @@ interface GenAIBlob {
   mimeType: string;
 }
 
-// --- Utils ---
+// --- Audio Utils ---
 function decode(base64: string) {
   const binaryString = atob(base64);
   const len = binaryString.length;
@@ -30,6 +30,7 @@ function encode(bytes: Uint8Array) {
 }
 
 async function decodeAudioData(data: Uint8Array, ctx: AudioContext, sampleRate: number, numChannels: number): Promise<AudioBuffer> {
+  // Use a copy of the buffer to avoid shared alignment issues
   const buffer = data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength);
   const dataInt16 = new Int16Array(buffer);
   const frameCount = dataInt16.length / numChannels;
@@ -77,7 +78,7 @@ const App: React.FC = () => {
   const [ttsLoading, setTtsLoading] = useState(false);
 
   const [translateInput, setTranslateInput] = useState('');
-  const [translateTarget, setTranslateTarget] = useState('Arabic');
+  const [translateTarget, setTranslateTarget] = useState('Saudi Arabic');
   const [translateResult, setTranslateResult] = useState('');
   const [translateLoading, setTranslateLoading] = useState(false);
 
@@ -93,7 +94,7 @@ const App: React.FC = () => {
   const currentOutputTranscription = useRef('');
   const transcriptScrollRef = useRef<HTMLDivElement>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
-  const audioChunksRef = useRef<BlobPart[]>([]);
+  const audioChunksRef = useRef<Blob[]>([]);
 
   useEffect(() => {
     if (transcriptScrollRef.current) {
@@ -163,8 +164,10 @@ const App: React.FC = () => {
             setIsConnected(true);
             setStatus('listening');
             nextStartTimeRef.current = 0;
-            // Send a small nudge text to start greeting immediately
-            sessionPromise.then(session => session?.sendRealtimeInput({ text: "Please start the conversation with your greeting." }));
+            
+            sessionPromise.then(session => {
+              session?.sendRealtimeInput({ text: "Conversation established. Please start by greeting the user professionally in the chosen dialect." });
+            });
 
             const source = inputCtx.createMediaStreamSource(stream);
             const scriptProcessor = inputCtx.createScriptProcessor(2048, 1, 1);
@@ -175,7 +178,7 @@ const App: React.FC = () => {
               let sum = 0;
               for(let i=0; i<inputData.length; i++) sum += inputData[i] * inputData[i];
               const rms = Math.sqrt(sum / inputData.length);
-              setInputLevel(Math.min(100, rms * 600));
+              setInputLevel(Math.min(100, rms * 500));
               const pcmBlob = createBlob(inputData);
               sessionPromise.then(session => session?.sendRealtimeInput({ media: pcmBlob }));
             };
@@ -227,12 +230,12 @@ const App: React.FC = () => {
               }
             }
           },
-          onerror: (e) => { setErrorMsg("Session error. Resetting..."); stopSession(); },
+          onerror: (e) => { setErrorMsg("An error occurred with the live session."); stopSession(); },
           onclose: () => { setIsConnected(false); setStatus('idle'); }
         }
       });
       sessionRef.current = await sessionPromise;
-    } catch (err: any) { setErrorMsg(err.message || "Access denied."); stopSession(); }
+    } catch (err: any) { setErrorMsg("Could not connect. Please check microphone permissions."); stopSession(); }
   }, [stopSession]);
 
   const toggleConnection = () => isConnected ? stopSession() : startSession(currentDialect);
@@ -248,7 +251,7 @@ const App: React.FC = () => {
     }
   };
 
-  // --- Tool Handlers ---
+  // --- Utility Handlers ---
   const toggleSttRecording = async () => {
     if (sttRecording) {
       mediaRecorderRef.current?.stop();
@@ -268,7 +271,7 @@ const App: React.FC = () => {
         recorder.start();
         setSttRecording(true);
       } catch (err) {
-        setErrorMsg("Mic error.");
+        setErrorMsg("Failed to access microphone.");
       }
     }
   };
@@ -283,8 +286,8 @@ const App: React.FC = () => {
         const response = await ai.models.generateContent({
           model: 'gemini-3-flash-preview',
           contents: [
-            { text: "Transcribe the following audio accurately. Just provide the text." },
-            { inlineData: { data: base64, mimeType: blob.type } }
+            { text: "Transcribe the following audio exactly as spoken in its original dialect." },
+            { inlineData: { data: base64, mimeType: 'audio/webm' } }
           ]
         });
         setSttTranscript(response.text || "No speech detected.");
@@ -310,10 +313,10 @@ const App: React.FC = () => {
           speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Kore' } } }
         }
       });
-      const base64 = response.candidates?.[0]?.content?.parts?.find(p => p.inlineData)?.inlineData?.data;
-      if (base64) {
+      const part = response.candidates?.[0]?.content?.parts?.find(p => p.inlineData);
+      if (part?.inlineData?.data) {
         const audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 24000 });
-        const buffer = await decodeAudioData(decode(base64), audioCtx, 24000, 1);
+        const buffer = await decodeAudioData(decode(part.inlineData.data), audioCtx, 24000, 1);
         const source = audioCtx.createBufferSource();
         source.buffer = buffer;
         source.connect(audioCtx.destination);
@@ -333,7 +336,7 @@ const App: React.FC = () => {
       const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
       const response = await ai.models.generateContent({
         model: 'gemini-3-flash-preview',
-        contents: `Translate the following text to ${translateTarget}: "${translateInput}"`
+        contents: `Translate the following text into ${translateTarget}. Maintain cultural nuances: "${translateInput}"`
       });
       setTranslateResult(response.text || "Translation error.");
     } catch (e) {
@@ -348,12 +351,12 @@ const App: React.FC = () => {
       <nav className="navbar">
         <div className="nav-container">
           <div className="logo">
-            <span className="logo-icon">🎙️</span>
+            <span className="logo-icon">🇸🇦</span>
             <span className="logo-text">Saudi Voice Intelligence</span>
           </div>
           <div className="nav-links">
-            <a href="#agent" onClick={() => setActiveTab('agent')}>Live Agent</a>
-            <a href="#tools" onClick={() => setActiveTab('stt')}>AI Tools</a>
+            <a href="#agent" onClick={() => setActiveTab('agent')}>Agent</a>
+            <a href="#tools" onClick={() => setActiveTab('stt')}>Utilities</a>
           </div>
         </div>
       </nav>
@@ -361,16 +364,20 @@ const App: React.FC = () => {
       <section className="hero">
         <div className="hero-bg-pattern"></div>
         <div className="hero-content">
-          <span className="hero-badge">INTELLECTUAL AI</span>
+          <span className="hero-badge">AI SPEECH PLATFORM</span>
           <h1 className="hero-title">
-            Voice Agent<br />Specialist<br />
-            <span className="gradient-text">Arabic Dialects</span>
+            Enterprise<br />Voice AI<br />
+            <span className="gradient-text">Dialect Expert</span>
           </h1>
-          <p className="hero-subtitle">High-speed Real-time Telecommunication Assistant with multi-language support.</p>
+          <p className="hero-subtitle">Unified support for Telecom billing and Hospital services in Arabic, English, Urdu, and Hindi dialects.</p>
+          <div className="hero-buttons">
+            <button onClick={() => setActiveTab('agent')} className="btn btn-accent btn-large">Launch Agent</button>
+            <button onClick={() => setActiveTab('stt')} className="btn btn-outline btn-large">Try AI Tools</button>
+          </div>
         </div>
       </section>
 
-      <div className="tool-tabs" id="tools" style={{padding: '1rem', background: '#f8fafc', display: 'flex', justifyContent: 'center', gap: '0.5rem'}}>
+      <div className="tool-tabs" id="tools" style={{padding: '1rem', background: '#f8fafc', borderTop: '1px solid #e2e8f0', display: 'flex', justifyContent: 'center', gap: '0.5rem'}}>
         {(['agent', 'stt', 'tts', 'translate'] as const).map(tab => (
           <button 
             key={tab} 
@@ -383,15 +390,16 @@ const App: React.FC = () => {
       </div>
 
       {activeTab === 'agent' && (
-        <section className="agent-section">
+        <section className="agent-section" id="agent">
           <div className="agent-container">
-            {errorMsg && <div style={{background: '#fee2e2', color: '#ef4444', padding: '1rem', borderRadius: '8px', marginBottom: '1rem'}}>{errorMsg}</div>}
+            {errorMsg && <div style={{background: '#fee2e2', color: '#ef4444', padding: '1rem', borderRadius: '12px', marginBottom: '1.5rem', fontWeight: 600, textAlign: 'center'}}>{errorMsg}</div>}
+            
             <div className="agent-card">
               <div className="agent-header">
                 <div className="agent-avatar">🤖</div>
                 <div className="agent-info">
-                  <h3>{currentDialect.label} Assistant</h3>
-                  <p>Status: <b style={{color: status === 'speaking' ? 'var(--accent-dark)' : 'inherit'}}>{status.toUpperCase()}</b></p>
+                  <h3 style={{fontSize: '1.2rem'}}>{currentDialect.label} Support</h3>
+                  <p style={{fontSize: '0.85rem', color: '#64748b'}}>Current Status: <span style={{fontWeight: 700, color: status === 'speaking' ? 'var(--accent-dark)' : 'inherit'}}>{status.toUpperCase()}</span></p>
                 </div>
                 <div className="status-pill">
                   <span className={`status-dot ${isConnected ? 'connected' : ''} ${status === 'speaking' ? 'speaking' : ''}`}></span>
@@ -400,7 +408,7 @@ const App: React.FC = () => {
 
               <div className="agent-controls">
                 <div className="language-select-tool">
-                  <label>SELECT CONVERSATION LANGUAGE:</label>
+                  <label>SWITCH AGENT DIALECT</label>
                   <select 
                     value={currentDialect.id} 
                     onChange={(e) => handleDialectChange(e.target.value)}
@@ -408,40 +416,48 @@ const App: React.FC = () => {
                     {DIALECTS.map(d => <option key={d.id} value={d.id}>{d.flag} {d.label}</option>)}
                   </select>
                 </div>
-                <button onClick={toggleConnection} className={`btn btn-full btn-large ${isConnected ? 'btn-secondary' : 'btn-accent'}`}>
-                  {isConnected ? 'End Conversation' : 'Start Calling'}
-                </button>
+                
+                <div className="agent-buttons">
+                  <button onClick={toggleConnection} className={`btn btn-full btn-large ${isConnected ? 'btn-secondary' : 'btn-accent'}`}>
+                    {isConnected ? 'End Call' : 'Establish Connection'}
+                  </button>
+                </div>
+
                 {isConnected && (
                   <div style={{marginTop: '1.5rem'}}>
-                    <p style={{fontSize: '0.65rem', color: '#64748b', fontWeight: 600}}>MIC LEVEL</p>
-                    <div style={{width: '100%', height: '6px', background: '#e2e8f0', borderRadius: '10px', marginTop: '4px', overflow: 'hidden'}}>
+                    <div style={{display: 'flex', justifyContent: 'space-between', marginBottom: '6px'}}>
+                      <span style={{fontSize: '0.75rem', color: '#64748b', fontWeight: 700}}>SPEECH SENSITIVITY</span>
+                      <span style={{fontSize: '0.75rem', color: '#64748b'}}>{Math.round(inputLevel)}%</span>
+                    </div>
+                    <div style={{width: '100%', height: '8px', background: '#e2e8f0', borderRadius: '10px', overflow: 'hidden'}}>
                       <div style={{width: `${inputLevel}%`, height: '100%', background: 'var(--accent)', transition: 'width 0.1s'}}></div>
                     </div>
                   </div>
                 )}
               </div>
 
-              <div ref={transcriptScrollRef} className="conversation-area" style={{background: '#fcfcfc', borderTop: '1px solid #e2e8f0'}}>
+              <div ref={transcriptScrollRef} className="conversation-area" style={{background: '#fff', padding: '1.5rem', minHeight: '380px'}}>
                 {messages.length === 0 && !liveUserSpeech && !liveAssistantSpeech && (
-                  <div style={{textAlign: 'center', padding: '3rem', color: '#94a3b8'}}>
-                    <p>Select your language and click "Start Calling" to begin.</p>
+                  <div style={{textAlign: 'center', padding: '5rem 2rem', color: '#94a3b8'}}>
+                    <div style={{fontSize: '3rem', marginBottom: '1.5rem'}}>📞</div>
+                    <p>Welcome! Connect now to inquire about your telecom bills or hospital appointments in your local dialect.</p>
                   </div>
                 )}
                 {messages.map((msg, idx) => (
                   <div key={idx} className={`message ${msg.role}`}>
-                    <p style={{fontSize: '0.6rem', opacity: 0.5, marginBottom: '2px', fontWeight: 700}}>{msg.role === 'user' ? 'YOU' : 'AGENT'}</p>
-                    <p>{msg.text}</p>
+                    <p style={{fontSize: '0.7rem', fontWeight: 800, textTransform: 'uppercase', marginBottom: '6px', opacity: 0.6}}>{msg.role === 'user' ? 'You' : 'Agent'}</p>
+                    <p style={{fontSize: '1rem', lineHeight: '1.5'}}>{msg.text}</p>
                   </div>
                 ))}
                 {liveUserSpeech && (
-                  <div className="message user" style={{opacity: 0.6}}>
-                    <p style={{fontSize: '0.6rem', fontWeight: 700}}>YOU (TRANSCRIBING...)</p>
-                    <p><i>{liveUserSpeech}</i></p>
+                  <div className="message user" style={{opacity: 0.75, border: '1px dashed #000'}}>
+                    <p style={{fontSize: '0.7rem', fontWeight: 800, marginBottom: '4px'}}>Processing Speech...</p>
+                    <p style={{fontStyle: 'italic'}}>{liveUserSpeech}</p>
                   </div>
                 )}
                 {liveAssistantSpeech && (
-                  <div className="message assistant">
-                    <p style={{fontSize: '0.6rem', fontWeight: 700}}>AGENT (SPEAKING...)</p>
+                  <div className="message assistant" style={{borderColor: 'var(--accent)', background: '#f7fee7'}}>
+                    <p style={{fontSize: '0.7rem', fontWeight: 800, marginBottom: '4px'}}>Assistant Responding...</p>
                     <p><b>{liveAssistantSpeech}</b></p>
                   </div>
                 )}
@@ -455,18 +471,22 @@ const App: React.FC = () => {
         <section className="tools-section">
           <div className="tool-panel active">
             <div className="section-header">
-              <span className="section-badge">AUDIO TO TEXT</span>
-              <h2>Speech Recognition</h2>
-              <p>Record audio to get a high-accuracy transcript in any language.</p>
+              <span className="section-badge">STT ENGINE</span>
+              <h2>Speech-to-Text Analysis</h2>
+              <p>Highly accurate transcription for regional Arabic and South Asian dialects.</p>
             </div>
-            <div className="audio-upload-zone" style={{background: '#f8fafc'}}>
+            <div className="audio-upload-zone" style={{background: '#f8fafc', border: '2px dashed #cbd5e1', padding: '3rem'}}>
+              <div style={{fontSize: '3rem', marginBottom: '1.5rem'}}>{sttRecording ? '🔴' : '🎤'}</div>
               <button onClick={toggleSttRecording} className={`btn btn-large ${sttRecording ? 'btn-secondary' : 'btn-accent'}`}>
                 {sttRecording ? 'Stop Recording' : 'Start Recording'}
               </button>
-              {sttAudioUrl && <audio src={sttAudioUrl} controls style={{marginTop: '1.5rem', width: '100%'}} />}
+              {sttAudioUrl && <div style={{marginTop: '2rem'}}><audio src={sttAudioUrl} controls style={{width: '100%'}} /></div>}
             </div>
-            <div className="transcript-box" style={{marginTop: '1.5rem'}}>
-              {sttLoading ? 'Analyzing audio...' : sttTranscript || 'Transcript will appear here...'}
+            <div className="transcript-box" style={{marginTop: '2rem', background: '#fff'}}>
+              <h4 style={{fontSize: '0.75rem', fontWeight: 800, textTransform: 'uppercase', color: '#94a3b8', marginBottom: '12px'}}>Transcription Output</h4>
+              <div style={{fontSize: '1.1rem'}}>
+                {sttLoading ? <span className="loading-dots">Analyzing your speech...</span> : sttTranscript || 'Your text will appear here.'}
+              </div>
             </div>
           </div>
         </section>
@@ -476,19 +496,19 @@ const App: React.FC = () => {
         <section className="tools-section">
           <div className="tool-panel active">
             <div className="section-header">
-              <span className="section-badge">TEXT TO AUDIO</span>
-              <h2>Voice Synthesis</h2>
-              <p>Turn any text into natural, high-quality human speech.</p>
+              <span className="section-badge">TTS ENGINE</span>
+              <h2>High-Fidelity Synthesis</h2>
+              <p>Convert any text into natural sounding voice with local inflections.</p>
             </div>
             <textarea 
               className="transcript-box" 
-              style={{width: '100%', minHeight: '150px', resize: 'none', background: '#fff', padding: '1.5rem'}}
-              placeholder="Enter text to convert to voice..."
+              style={{width: '100%', minHeight: '200px', resize: 'none', background: '#fff', padding: '1.5rem', fontSize: '1.1rem'}}
+              placeholder="Paste text here to generate human-like audio..."
               value={ttsInput}
               onChange={(e) => setTtsInput(e.target.value)}
             />
-            <button onClick={handleTts} disabled={ttsLoading} className="btn btn-accent btn-full btn-large" style={{marginTop: '1.5rem'}}>
-              {ttsLoading ? 'Synthesizing...' : 'Play Voice'}
+            <button onClick={handleTts} disabled={ttsLoading || !ttsInput.trim()} className="btn btn-accent btn-full btn-large" style={{marginTop: '2rem'}}>
+              {ttsLoading ? 'Processing Audio...' : 'Generate and Play Voice'}
             </button>
           </div>
         </section>
@@ -498,36 +518,40 @@ const App: React.FC = () => {
         <section className="tools-section">
           <div className="tool-panel active">
             <div className="section-header">
-              <span className="section-badge">MULTILINGUAL</span>
-              <h2>Instant Translation</h2>
-              <p>Translate content between languages with context awareness.</p>
+              <span className="section-badge">TRANSLATION</span>
+              <h2>Dialect-Aware Translator</h2>
+              <p>Communicate across borders while maintaining local cultural context.</p>
             </div>
             <div className="tool-grid">
-              <div style={{display: 'flex', flexDirection: 'column', gap: '1rem'}}>
+              <div style={{display: 'flex', flexDirection: 'column', gap: '1.5rem'}}>
                 <textarea 
                   className="transcript-box" 
-                  style={{width: '100%', minHeight: '150px', resize: 'none', background: '#fff', padding: '1rem'}}
-                  placeholder="Paste text to translate..."
+                  style={{width: '100%', minHeight: '220px', resize: 'none', background: '#fff', padding: '1rem', fontSize: '1rem'}}
+                  placeholder="Enter text to translate..."
                   value={translateInput}
                   onChange={(e) => setTranslateInput(e.target.value)}
                 />
                 <select 
                   className="transcript-box" 
-                  style={{padding: '0.8rem', minHeight: 'auto'}}
+                  style={{padding: '1rem', minHeight: 'auto'}}
                   value={translateTarget}
                   onChange={(e) => setTranslateTarget(e.target.value)}
                 >
+                  <option value="Saudi Arabic">To Saudi Arabic</option>
                   <option value="English">To English</option>
-                  <option value="Arabic">To Arabic</option>
                   <option value="Urdu">To Urdu</option>
                   <option value="Hindi">To Hindi</option>
+                  <option value="Egyptian Arabic">To Egyptian Arabic</option>
                 </select>
-                <button onClick={handleTranslate} disabled={translateLoading} className="btn btn-accent btn-full">
-                  {translateLoading ? 'Translating...' : 'Translate Now'}
+                <button onClick={handleTranslate} disabled={translateLoading || !translateInput.trim()} className="btn btn-accent btn-full btn-large">
+                  {translateLoading ? 'Translating...' : 'Instant Translate'}
                 </button>
               </div>
-              <div className="transcript-box" style={{background: '#f1f5f9'}}>
-                {translateResult || 'Translation result will appear here...'}
+              <div className="transcript-box" style={{background: '#f1f5f9', minHeight: '220px'}}>
+                <h4 style={{fontSize: '0.75rem', fontWeight: 800, textTransform: 'uppercase', color: '#94a3b8', marginBottom: '12px'}}>Result</h4>
+                <div style={{fontSize: '1.1rem', color: '#1e293b'}}>
+                  {translateResult || 'Translated text will be displayed here.'}
+                </div>
               </div>
             </div>
           </div>
@@ -535,7 +559,11 @@ const App: React.FC = () => {
       )}
 
       <footer className="footer">
-        <p>© 2025 Saudi Voice Intelligence. Dedicated AI for Telecommunications.</p>
+        <div className="logo" style={{justifyContent: 'center', marginBottom: '2rem'}}>
+          <span className="logo-icon">🇸🇦</span>
+          <span className="logo-text">Saudi Voice Intelligence</span>
+        </div>
+        <p style={{color: '#94a3b8', fontSize: '0.95rem'}}>© 2025 SVI Global. Powering the next generation of voice-first interfaces.</p>
       </footer>
     </div>
   );

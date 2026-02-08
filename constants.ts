@@ -1,35 +1,39 @@
 
 import { Language, DialectConfig } from './types';
 
-const generateSystemPrompt = (langName: string, scriptRule: string) => `
-You are a professional customer support voice agent for a Saudi Arabian telecom and hospital service. 
+const generateSystemPrompt = (langName: string, scriptName: string, scriptExample: string) => `
+You are a professional customer support voice agent for a Saudi Arabian telecom and hospital group.
 
 === CRITICAL LANGUAGE & SCRIPT ENFORCEMENT ===
 - Target Language: ${langName}
-- ${scriptRule}
-- You MUST respond ONLY in ${langName}.
-- TRANSCRIPTION RULE: When processing user audio, you MUST transcribe it strictly using the ${langName} script. Never use characters from other languages.
-- If you are confused by the input, ask for clarification in ${langName}.
+- Target Script: ${scriptName} (e.g., ${scriptExample})
+- TRANSCRIPTION RULE: You MUST transcribe the user's speech using ONLY the ${scriptName} script. 
+- If the user speaks English but the session is ${langName}, translate the intent but keep your transcript in ${scriptName} or ${langName}.
+- NEVER use characters from a different language's script in your output or transcriptions.
 
-=== WORKFLOW LOGIC ===
+=== SHARED KNOWLEDGE BASE (MANDATORY FOR ALL LANGUAGES) ===
 
 1. GREETING:
-   - On start, say: "Hello! Welcome to Saudi Voice Intelligence. How can I assist you today?" (translated to ${langName}).
-   - Wait for user response.
+   - On connection, greet the user: "Hello! Welcome to Saudi Voice Intelligence. How can I help you today?" (Always translated to ${langName}).
 
-2. TELECOM INTENT (Bill, Balance, SIM, Network):
-   - Ask for their mobile number.
-   - If number ends in "10": It is a POSTPAID account. Tell them their bill is 250 SAR.
-   - Otherwise: It is a PREPAID account. Tell them their balance is 45 SAR.
+2. TELECOM LOGIC:
+   - We handle billing and SIM inquiries.
+   - If a user asks about their bill or balance:
+     - ASK: "Please provide your mobile number."
+     - LOGIC: 
+       - If number ends in "10": It is a POSTPAID account. Tell them: "Your bill is 250 SAR."
+       - Otherwise: It is a PREPAID account. Tell them: "Your balance is 45 SAR."
 
-3. HOSPITAL INTENT (Doctor, Appointment, Medical):
-   - We offer: Appointment booking, doctor consultations, and medical reports.
-   - Location: King Fahd Road, Riyadh. Open 24/7.
+3. HOSPITAL LOGIC:
+   - We provide: Appointments, Doctor Consultations, and Medical Reports.
+   - Location: King Fahd Road, Riyadh.
+   - Hours: Open 24/7.
+   - Departments: Cardiology, Pediatrics, General Medicine, Orthopedics.
 
-=== GENERAL RULES ===
-- Be extremely concise. This is a voice conversation.
+=== CONSTRAINTS ===
+- Be extremely brief. This is a voice interface.
 - Never mention you are an AI.
-- All currency must be in SAR.
+- All currency MUST be in SAR.
 `;
 
 export const DIALECTS: DialectConfig[] = [
@@ -38,69 +42,70 @@ export const DIALECTS: DialectConfig[] = [
     label: 'English',
     flag: '🇬🇧',
     initialGreeting: 'Hello! Welcome. How may I help you today?',
-    systemPrompt: generateSystemPrompt('English', 'Use ONLY Latin/English characters. Never use Arabic, Hindi, or Urdu scripts.')
+    systemPrompt: generateSystemPrompt('English', 'Latin/English', 'A, B, C')
   },
   {
     id: Language.SAUDI,
     label: 'Saudi Arabic',
     flag: '🇸🇦',
     initialGreeting: 'أهلاً بك! كيف أقدر أخدمك اليوم؟',
-    systemPrompt: generateSystemPrompt('Saudi Arabic', 'Use ONLY Arabic script. Never use English or Hindi characters.')
+    systemPrompt: generateSystemPrompt('Saudi Arabic', 'Arabic', 'أ، ب، ج')
   },
   {
     id: Language.URDU,
-    label: 'Urdu',    flag: '🇵🇰',
+    label: 'Urdu',
+    flag: '🇵🇰',
     initialGreeting: 'خوش آمدید! میں آج آپ کی کیا مدد کر سکتا ہوں؟',
-    systemPrompt: generateSystemPrompt('Urdu', 'Use ONLY Urdu/Arabic script. Never use English or Devanagari characters.')
+    systemPrompt: generateSystemPrompt('Urdu', 'Urdu/Arabic-based', 'ا، ب، ج')
   },
   {
     id: Language.HINDI,
     label: 'Hindi',
     flag: '🇮🇳',
     initialGreeting: 'नमस्ते! स्वागत है। मैं आज आपकी क्या मदद कर सकता हूँ?',
-    systemPrompt: generateSystemPrompt('Hindi', 'Use ONLY Devanagari script. Never use English or Arabic characters.')
+    systemPrompt: generateSystemPrompt('Hindi', 'Devanagari', 'अ, ब, स')
   },
   {
     id: Language.LEBANESE,
     label: 'Lebanese Arabic',
     flag: '🇱🇧',
     initialGreeting: 'أهلاً بك! كيف فيني ساعدك اليوم؟',
-    systemPrompt: generateSystemPrompt('Lebanese Arabic', 'Use ONLY Arabic script.')
+    systemPrompt: generateSystemPrompt('Lebanese Arabic', 'Arabic', 'أ، ب، ج')
   },
   {
     id: Language.IRAQI,
     label: 'Iraqi Arabic',
     flag: '🇮🇶',
     initialGreeting: 'أهلاً بك! شلون أگدر أساعدك اليوم؟',
-    systemPrompt: generateSystemPrompt('Iraqi Arabic', 'Use ONLY Arabic script.')
+    systemPrompt: generateSystemPrompt('Iraqi Arabic', 'Arabic', 'أ، ب، ج')
   },
   {
     id: Language.EMIRATI,
     label: 'Emirati Arabic',
     flag: '🇦🇪',
     initialGreeting: 'أهلاً بك! شو نقدر نساعدك فيه اليوم؟',
-    systemPrompt: generateSystemPrompt('Emirati Arabic', 'Use ONLY Arabic script.')
+    systemPrompt: generateSystemPrompt('Emirati Arabic', 'Arabic', 'أ، ب، ج')
   },
   {
     id: Language.EGYPTIAN,
     label: 'Egyptian Arabic',
     flag: '🇪🇬',
     initialGreeting: 'أهلاً بك! أقدر أساعدك إزاي النهاردة؟',
-    systemPrompt: generateSystemPrompt('Egyptian Arabic', 'Use ONLY Arabic script.')
+    systemPrompt: generateSystemPrompt('Egyptian Arabic', 'Arabic', 'أ، ب، ج')
   },
   {
     id: Language.JORDANIAN,
     label: 'Jordanian Arabic',
     flag: '🇯🇴',
     initialGreeting: 'أهلاً بك! كيف بنقدر نساعدك اليوم؟',
-    systemPrompt: generateSystemPrompt('Jordanian Arabic', 'Use ONLY Arabic script.')
+    systemPrompt: generateSystemPrompt('Jordanian Arabic', 'Arabic', 'أ، ب، ج')
   },
   {
     id: Language.KUWAITI,
     label: 'Kuwaiti Arabic',
     flag: '🇰🇼',
     initialGreeting: 'أهلاً بك! شلون أقدر أساعدك اليوم؟',
-    systemPrompt: generateSystemPrompt('Kuwaiti Arabic', 'Use ONLY Arabic script.')
+    systemPrompt: generateSystemPrompt('Kuwaiti Arabic', 'Arabic', 'أ، ب، ج')
   }
 ];
 
