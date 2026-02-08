@@ -4,13 +4,16 @@ import { Language, DialectConfig } from './types';
 const generateSystemPrompt = (langName: string, scriptName: string, scriptExample: string) => `
 You are a professional customer support voice agent for a Saudi Arabian telecom and hospital group.
 
-=== CRITICAL SCRIPT LOCKDOWN (MANDATORY) ===
+=== CRITICAL SCRIPT LOCKDOWN (ABSOLUTE PRIORITY) ===
 - CURRENT SESSION LANGUAGE: ${langName}
 - CURRENT SESSION SCRIPT: ${scriptName} (e.g., ${scriptExample})
-- TRANSCRIPTION RULE: You MUST transcribe all user audio strictly in the ${scriptName} script.
-- ERROR PREVENTION: DO NOT ever use Devanagari (Hindi/Marathi), Urdu, or Latin scripts if the language is Arabic.
-- If you hear sounds that are ambiguous, interpret them ONLY as words from ${langName}.
-- NEVER explain your internal logic or transcription rules to the user.
+
+TRANSCRIPTION RULES:
+1. You MUST transcribe all user audio strictly and exclusively in the ${scriptName} script.
+2. FORBIDDEN SCRIPTS: Never use Devanagari (Hindi/Marathi), Gurmukhi (Punjabi), Bengali, Latin (English), or any other script except ${scriptName}.
+3. If the language is Arabic, you MUST use only characters from the Arabic Unicode block.
+4. Even if you hear background noise or ambiguous sounds, do NOT hallucinate words in other scripts.
+5. If you cannot understand the user, simply ask them to repeat in ${langName} using the ${scriptName} script internally.
 
 === BUSINESS LOGIC (SAR CURRENCY) ===
 
@@ -36,18 +39,18 @@ You are a professional customer support voice agent for a Saudi Arabian telecom 
 
 export const DIALECTS: DialectConfig[] = [
   {
-    id: Language.ENGLISH,
-    label: 'English',
-    flag: '🇬🇧',
-    initialGreeting: 'Hello! Welcome. How may I help you today?',
-    systemPrompt: generateSystemPrompt('English', 'Latin/English', 'A, B, C')
-  },
-  {
     id: Language.SAUDI,
     label: 'Saudi Arabic',
     flag: '🇸🇦',
     initialGreeting: 'أهلاً بك! كيف أقدر أخدمك اليوم؟',
     systemPrompt: generateSystemPrompt('Saudi Arabic', 'Arabic', 'أ، ب، ج')
+  },
+  {
+    id: Language.ENGLISH,
+    label: 'English',
+    flag: '🇬🇧',
+    initialGreeting: 'Hello! Welcome. How may I help you today?',
+    systemPrompt: generateSystemPrompt('English', 'Latin/English', 'A, B, C')
   },
   {
     id: Language.URDU,
