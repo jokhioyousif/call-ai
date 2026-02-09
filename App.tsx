@@ -1,4 +1,3 @@
-
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { GoogleGenAI, LiveServerMessage, Modality, Type, GenerateContentResponse } from '@google/genai';
 import { Language, DialectConfig, Message } from './types';
@@ -55,6 +54,38 @@ function createBlob(data: Float32Array): GenAIBlob {
   };
 }
 
+// Script validation helper
+function isCorrectScript(text: string, dialect: DialectConfig): boolean {
+  if (!text || text.trim().length === 0) return true;
+  
+  // Define script ranges
+  const arabicRange = /[\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF\uFB50-\uFDFF\uFE70-\uFEFF]/;
+  const devanagariRange = /[\u0900-\u097F]/;
+  const latinRange = /[A-Za-z]/;
+  
+  // Check based on language
+  switch (dialect.id) {
+    case Language.HINDI:
+      // For Hindi, should have Devanagari characters
+      return devanagariRange.test(text);
+    case Language.ENGLISH:
+      // For English, should have Latin characters
+      return latinRange.test(text);
+    case Language.SAUDI:
+    case Language.LEBANESE:
+    case Language.IRAQI:
+    case Language.EMIRATI:
+    case Language.EGYPTIAN:
+    case Language.JORDANIAN:
+    case Language.KUWAITI:
+    case Language.URDU:
+      // For Arabic/Urdu languages, should have Arabic script
+      return arabicRange.test(text);
+    default:
+      return true;
+  }
+}
+
 const App: React.FC = () => {
   const [activeTab, setActiveTab] = useState<'agent' | 'stt' | 'tts' | 'translate'>('agent');
   const [currentDialect, setCurrentDialect] = useState<DialectConfig>(DIALECTS[0]); 
@@ -94,6 +125,11 @@ const App: React.FC = () => {
   const transcriptScrollRef = useRef<HTMLDivElement>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
+  const currentDialectRef = useRef<DialectConfig>(DIALECTS[0]);
+
+  useEffect(() => {
+    currentDialectRef.current = currentDialect;
+  }, [currentDialect]);
 
   useEffect(() => {
     if (transcriptScrollRef.current) {
@@ -137,6 +173,8 @@ const App: React.FC = () => {
     setErrorMsg(null);
     setStatus('thinking');
     setMessages([]);
+    currentDialectRef.current = dialect;
+    
     try {
       const inputCtx = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: AUDIO_SAMPLE_RATE_INPUT });
       const outputCtx = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: AUDIO_SAMPLE_RATE_OUTPUT });
@@ -149,12 +187,25 @@ const App: React.FC = () => {
       mediaStreamRef.current = stream;
 
       const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+      
+      // Enhanced system instruction with multiple reminders
+      const enhancedSystemInstruction = `${dialect.systemPrompt}
+
+=== CRITICAL REMINDER - READ BEFORE EVERY RESPONSE ===
+SESSION LANGUAGE: ${dialect.label}
+TRANSCRIPTION SCRIPT: You MUST use ONLY the correct script for ${dialect.label}
+- DO NOT use any other language's script in transcription
+- DO NOT mix scripts
+- Validate every transcription before sending
+
+This is a ${dialect.label} session. Maintain script consistency at all times.`;
+
       const sessionPromise = ai.live.connect({
         model: 'gemini-2.5-flash-native-audio-preview-12-2025',
         config: {
           responseModalities: [Modality.AUDIO],
           speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Zephyr' } } },
-          systemInstruction: dialect.systemPrompt,
+          systemInstruction: enhancedSystemInstruction,
           inputAudioTranscription: {},
           outputAudioTranscription: {},
         },
@@ -164,13 +215,16 @@ const App: React.FC = () => {
             setStatus('listening');
             nextStartTimeRef.current = 0;
             
+            // Send initialization message with script reinforcement
             sessionPromise.then(session => {
-              // FORCED SCRIPT REINFORCEMENT
+              const scriptName = dialect.id === Language.HINDI ? 'Devanagari' :
+                               dialect.id === Language.ENGLISH ? 'Latin' : 'Arabic';
+              
               session?.sendRealtimeInput({ 
-                text: `[SYSTEM COMMAND]: The session has started. You are in ${dialect.label} mode. 
-                STRICT RULE: Only use Arabic script for transcription. 
-                DO NOT use Hindi/Punjabi/Bengali scripts. 
-                Now, greet the user warmly in ${dialect.label}.` 
+                text: `[SYSTEM INITIALIZATION]: ${dialect.label} session started. 
+CRITICAL: Use ONLY ${scriptName} script for all transcriptions.
+DO NOT use any other script. This is mandatory.
+Now greet the user in ${dialect.label}.` 
               });
             });
 
@@ -192,14 +246,35 @@ const App: React.FC = () => {
           },
           onmessage: async (message: LiveServerMessage) => {
             if (message.serverContent?.inputTranscription) {
-              // Validate transcription script if possible, or just append
-              currentInputTranscription.current += message.serverContent.inputTranscription.text;
-              setLiveUserSpeech(currentInputTranscription.current);
+              const transcribedText = message.serverContent.inputTranscription.text;
+              
+              // Validate script - if wrong script detected, filter it out
+              if (isCorrectScript(transcribedText, currentDialectRef.current)) {
+                currentInputTranscription.current += transcribedText;
+                setLiveUserSpeech(currentInputTranscription.current);
+              } else {
+                // Wrong script detected - send correction reminder
+                console.warn(`Wrong script detected for ${currentDialectRef.current.label}: "${transcribedText}"`);
+                sessionPromise.then(session => {
+                  const correctScript = currentDialectRef.current.id === Language.HINDI ? 'Devanagari' :
+                                       currentDialectRef.current.id === Language.ENGLISH ? 'Latin' : 'Arabic';
+                  session?.sendRealtimeInput({
+                    text: `[CORRECTION]: Wrong script detected. You MUST use ${correctScript} script for ${currentDialectRef.current.label}. Fix your transcription immediately.`
+                  });
+                });
+              }
             }
+            
             if (message.serverContent?.outputTranscription) {
-              currentOutputTranscription.current += message.serverContent.outputTranscription.text;
-              setLiveAssistantSpeech(currentOutputTranscription.current);
+              const transcribedText = message.serverContent.outputTranscription.text;
+              
+              // Validate script for output too
+              if (isCorrectScript(transcribedText, currentDialectRef.current)) {
+                currentOutputTranscription.current += transcribedText;
+                setLiveAssistantSpeech(currentOutputTranscription.current);
+              }
             }
+            
             if (message.serverContent?.turnComplete) {
               const u = currentInputTranscription.current.trim();
               const a = currentOutputTranscription.current.trim();
@@ -215,6 +290,7 @@ const App: React.FC = () => {
               setLiveUserSpeech('');
               setStatus('listening');
             }
+            
             const modelTurn = message.serverContent?.modelTurn;
             if (modelTurn?.parts) {
               for (const part of modelTurn.parts) {
@@ -252,7 +328,7 @@ const App: React.FC = () => {
       setCurrentDialect(dialect);
       if (isConnected) {
         stopSession();
-        startSession(dialect);
+        setTimeout(() => startSession(dialect), 300);
       }
     }
   };
@@ -418,9 +494,11 @@ const App: React.FC = () => {
                   <select 
                     value={currentDialect.id} 
                     onChange={(e) => handleDialectChange(e.target.value)}
+                    disabled={isConnected}
                   >
                     {DIALECTS.map(d => <option key={d.id} value={d.id}>{d.flag} {d.label}</option>)}
                   </select>
+                  {isConnected && <p style={{fontSize: '0.75rem', color: '#94a3b8', marginTop: '0.5rem'}}>Disconnect to change language</p>}
                 </div>
                 
                 <div className="agent-buttons">
