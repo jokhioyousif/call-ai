@@ -451,7 +451,7 @@ Now greet the user in ${dialect.label}.`
             Enterprise<br />Voice AI<br />
             <span className="gradient-text">Dialect Expert</span>
           </h1>
-          <p className="hero-subtitle">Unified support for Telecom billing and Hospital services across 10 regional dialects.</p>
+          <p className="hero-subtitle">Unified support for Telecom billing and Hospital services</p>
           <div className="hero-buttons">
             <button onClick={() => setActiveTab('agent')} className="btn btn-accent btn-large">Establish Connection</button>
             <button onClick={() => setActiveTab('stt')} className="btn btn-outline btn-large">Utilities</button>
