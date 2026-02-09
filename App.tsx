@@ -54,38 +54,6 @@ function createBlob(data: Float32Array): GenAIBlob {
   };
 }
 
-// Script validation helper
-function isCorrectScript(text: string, dialect: DialectConfig): boolean {
-  if (!text || text.trim().length === 0) return true;
-  
-  // Define script ranges
-  const arabicRange = /[\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF\uFB50-\uFDFF\uFE70-\uFEFF]/;
-  const devanagariRange = /[\u0900-\u097F]/;
-  const latinRange = /[A-Za-z]/;
-  
-  // Check based on language
-  switch (dialect.id) {
-    case Language.HINDI:
-      // For Hindi, should have Devanagari characters
-      return devanagariRange.test(text);
-    case Language.ENGLISH:
-      // For English, should have Latin characters
-      return latinRange.test(text);
-    case Language.SAUDI:
-    case Language.LEBANESE:
-    case Language.IRAQI:
-    case Language.EMIRATI:
-    case Language.EGYPTIAN:
-    case Language.JORDANIAN:
-    case Language.KUWAITI:
-    case Language.URDU:
-      // For Arabic/Urdu languages, should have Arabic script
-      return arabicRange.test(text);
-    default:
-      return true;
-  }
-}
-
 const App: React.FC = () => {
   const [activeTab, setActiveTab] = useState<'agent' | 'stt' | 'tts' | 'translate'>('agent');
   const [currentDialect, setCurrentDialect] = useState<DialectConfig>(DIALECTS[0]); 
@@ -125,11 +93,6 @@ const App: React.FC = () => {
   const transcriptScrollRef = useRef<HTMLDivElement>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
-  const currentDialectRef = useRef<DialectConfig>(DIALECTS[0]);
-
-  useEffect(() => {
-    currentDialectRef.current = currentDialect;
-  }, [currentDialect]);
 
   useEffect(() => {
     if (transcriptScrollRef.current) {
@@ -173,8 +136,6 @@ const App: React.FC = () => {
     setErrorMsg(null);
     setStatus('thinking');
     setMessages([]);
-    currentDialectRef.current = dialect;
-    
     try {
       const inputCtx = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: AUDIO_SAMPLE_RATE_INPUT });
       const outputCtx = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: AUDIO_SAMPLE_RATE_OUTPUT });
@@ -186,26 +147,13 @@ const App: React.FC = () => {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       mediaStreamRef.current = stream;
 
-      const ai = new GoogleGenAI({ apiKey: process.env.API_KEY || '' });
-      
-      // Enhanced system instruction with multiple reminders
-      const enhancedSystemInstruction = `${dialect.systemPrompt}
-
-=== CRITICAL REMINDER - READ BEFORE EVERY RESPONSE ===
-SESSION LANGUAGE: ${dialect.label}
-TRANSCRIPTION SCRIPT: You MUST use ONLY the correct script for ${dialect.label}
-- DO NOT use any other language's script in transcription
-- DO NOT mix scripts
-- Validate every transcription before sending
-
-This is a ${dialect.label} session. Maintain script consistency at all times.`;
-
+      const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
       const sessionPromise = ai.live.connect({
         model: 'gemini-2.5-flash-native-audio-preview-12-2025',
         config: {
           responseModalities: [Modality.AUDIO],
           speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Zephyr' } } },
-          systemInstruction: enhancedSystemInstruction,
+          systemInstruction: dialect.systemPrompt,
           inputAudioTranscription: {},
           outputAudioTranscription: {},
         },
@@ -215,16 +163,13 @@ This is a ${dialect.label} session. Maintain script consistency at all times.`;
             setStatus('listening');
             nextStartTimeRef.current = 0;
             
-            // Send initialization message with script reinforcement
             sessionPromise.then(session => {
-              const scriptName = dialect.id === Language.HINDI ? 'Devanagari' :
-                               dialect.id === Language.ENGLISH ? 'Latin' : 'Arabic';
-              
+              // FORCED SCRIPT REINFORCEMENT
               session?.sendRealtimeInput({ 
-                text: `[SYSTEM INITIALIZATION]: ${dialect.label} session started. 
-CRITICAL: Use ONLY ${scriptName} script for all transcriptions.
-DO NOT use any other script. This is mandatory.
-Now greet the user in ${dialect.label}.` 
+                text: `[SYSTEM COMMAND]: The session has started. You are in ${dialect.label} mode. 
+                STRICT RULE: Only use Arabic script for transcription. 
+                DO NOT use Hindi/Punjabi/Bengali scripts. 
+                Now, greet the user warmly in ${dialect.label}.` 
               });
             });
 
@@ -246,35 +191,14 @@ Now greet the user in ${dialect.label}.`
           },
           onmessage: async (message: LiveServerMessage) => {
             if (message.serverContent?.inputTranscription) {
-              const transcribedText = message.serverContent.inputTranscription.text;
-              
-              // Validate script - if wrong script detected, filter it out
-              if (isCorrectScript(transcribedText, currentDialectRef.current)) {
-                currentInputTranscription.current += transcribedText;
-                setLiveUserSpeech(currentInputTranscription.current);
-              } else {
-                // Wrong script detected - send correction reminder
-                console.warn(`Wrong script detected for ${currentDialectRef.current.label}: "${transcribedText}"`);
-                sessionPromise.then(session => {
-                  const correctScript = currentDialectRef.current.id === Language.HINDI ? 'Devanagari' :
-                                       currentDialectRef.current.id === Language.ENGLISH ? 'Latin' : 'Arabic';
-                  session?.sendRealtimeInput({
-                    text: `[CORRECTION]: Wrong script detected. You MUST use ${correctScript} script for ${currentDialectRef.current.label}. Fix your transcription immediately.`
-                  });
-                });
-              }
+              // Validate transcription script if possible, or just append
+              currentInputTranscription.current += message.serverContent.inputTranscription.text;
+              setLiveUserSpeech(currentInputTranscription.current);
             }
-            
             if (message.serverContent?.outputTranscription) {
-              const transcribedText = message.serverContent.outputTranscription.text;
-              
-              // Validate script for output too
-              if (isCorrectScript(transcribedText, currentDialectRef.current)) {
-                currentOutputTranscription.current += transcribedText;
-                setLiveAssistantSpeech(currentOutputTranscription.current);
-              }
+              currentOutputTranscription.current += message.serverContent.outputTranscription.text;
+              setLiveAssistantSpeech(currentOutputTranscription.current);
             }
-            
             if (message.serverContent?.turnComplete) {
               const u = currentInputTranscription.current.trim();
               const a = currentOutputTranscription.current.trim();
@@ -290,7 +214,6 @@ Now greet the user in ${dialect.label}.`
               setLiveUserSpeech('');
               setStatus('listening');
             }
-            
             const modelTurn = message.serverContent?.modelTurn;
             if (modelTurn?.parts) {
               for (const part of modelTurn.parts) {
@@ -328,7 +251,7 @@ Now greet the user in ${dialect.label}.`
       setCurrentDialect(dialect);
       if (isConnected) {
         stopSession();
-        setTimeout(() => startSession(dialect), 300);
+        startSession(dialect);
       }
     }
   };
@@ -364,7 +287,7 @@ Now greet the user in ${dialect.label}.`
       const reader = new FileReader();
       reader.onloadend = async () => {
         const base64 = (reader.result as string).split(',')[1];
-        const ai = new GoogleGenAI({ apiKey: process.env.API_KEY || '' });
+        const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
         const response = await ai.models.generateContent({
           model: 'gemini-3-flash-preview',
           contents: [
@@ -386,7 +309,7 @@ Now greet the user in ${dialect.label}.`
     if (!ttsInput.trim()) return;
     setTtsLoading(true);
     try {
-      const ai = new GoogleGenAI({ apiKey: process.env.API_KEY || '' });
+      const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
       const response = await ai.models.generateContent({
         model: "gemini-2.5-flash-preview-tts",
         contents: [{ parts: [{ text: ttsInput }] }],
@@ -415,7 +338,7 @@ Now greet the user in ${dialect.label}.`
     if (!translateInput.trim()) return;
     setTranslateLoading(true);
     try {
-      const ai = new GoogleGenAI({ apiKey: process.env.API_KEY || '' });
+      const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
       const response = await ai.models.generateContent({
         model: 'gemini-3-flash-preview',
         contents: `Translate the following to ${translateTarget}: "${translateInput}"`
@@ -494,11 +417,9 @@ Now greet the user in ${dialect.label}.`
                   <select 
                     value={currentDialect.id} 
                     onChange={(e) => handleDialectChange(e.target.value)}
-                    disabled={isConnected}
                   >
                     {DIALECTS.map(d => <option key={d.id} value={d.id}>{d.flag} {d.label}</option>)}
                   </select>
-                  {isConnected && <p style={{fontSize: '0.75rem', color: '#94a3b8', marginTop: '0.5rem'}}>Disconnect to change language</p>}
                 </div>
                 
                 <div className="agent-buttons">
