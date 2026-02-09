@@ -147,7 +147,24 @@ const App: React.FC = () => {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       mediaStreamRef.current = stream;
 
+<<<<<<< HEAD
       const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+=======
+      const ai = new GoogleGenAI({ apiKey: process.env.API_KEY || '' });
+      
+      // Enhanced system instruction with multiple reminders
+      const enhancedSystemInstruction = `${dialect.systemPrompt}
+
+=== CRITICAL REMINDER - READ BEFORE EVERY RESPONSE ===
+SESSION LANGUAGE: ${dialect.label}
+TRANSCRIPTION SCRIPT: You MUST use ONLY the correct script for ${dialect.label}
+- DO NOT use any other language's script in transcription
+- DO NOT mix scripts
+- Validate every transcription before sending
+
+This is a ${dialect.label} session. Maintain script consistency at all times.`;
+
+>>>>>>> 3b4ddf8 (changes twleve)
       const sessionPromise = ai.live.connect({
         model: 'gemini-2.5-flash-native-audio-preview-12-2025',
         config: {
@@ -287,7 +304,7 @@ const App: React.FC = () => {
       const reader = new FileReader();
       reader.onloadend = async () => {
         const base64 = (reader.result as string).split(',')[1];
-        const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+        const ai = new GoogleGenAI({ apiKey: process.env.API_KEY || '' });
         const response = await ai.models.generateContent({
           model: 'gemini-3-flash-preview',
           contents: [
@@ -309,7 +326,7 @@ const App: React.FC = () => {
     if (!ttsInput.trim()) return;
     setTtsLoading(true);
     try {
-      const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+      const ai = new GoogleGenAI({ apiKey: process.env.API_KEY || '' });
       const response = await ai.models.generateContent({
         model: "gemini-2.5-flash-preview-tts",
         contents: [{ parts: [{ text: ttsInput }] }],
@@ -338,7 +355,7 @@ const App: React.FC = () => {
     if (!translateInput.trim()) return;
     setTranslateLoading(true);
     try {
-      const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+      const ai = new GoogleGenAI({ apiKey: process.env.API_KEY || '' });
       const response = await ai.models.generateContent({
         model: 'gemini-3-flash-preview',
         contents: `Translate the following to ${translateTarget}: "${translateInput}"`
