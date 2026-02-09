@@ -1,7 +1,13 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { GoogleGenAI, LiveServerMessage, Modality, Type, GenerateContentResponse } from '@google/genai';
-import { Language, DialectConfig, Message } from './types';
+import { GoogleGenAI, LiveServerMessage, Modality } from '@google/genai';
+import { DialectConfig, Message } from './types';
 import { DIALECTS, AUDIO_SAMPLE_RATE_INPUT, AUDIO_SAMPLE_RATE_OUTPUT } from './constants';
+
+// Simple list for Tools (STT/TTS/Translation)
+const TOOL_LANGUAGES = [
+  "Saudi Arabic", "English", "Urdu", "Hindi", 
+  "Lebanese Arabic", "Egyptian Arabic", "Spanish", "French", "German"
+];
 
 interface GenAIBlob {
   data: string;
@@ -66,17 +72,25 @@ const App: React.FC = () => {
   const [liveAssistantSpeech, setLiveAssistantSpeech] = useState('');
   const [inputLevel, setInputLevel] = useState(0);
 
-  // Tools State
+  // --- Tools State ---
+  
+  // STT State
+  const [sttLanguage, setSttLanguage] = useState('English');
   const [sttTranscript, setSttTranscript] = useState('');
   const [sttLoading, setSttLoading] = useState(false);
   const [sttRecording, setSttRecording] = useState(false);
   const [sttAudioUrl, setSttAudioUrl] = useState<string | null>(null);
+  const [sttBlob, setSttBlob] = useState<Blob | null>(null);
 
+  // TTS State
+  const [ttsLanguage, setTtsLanguage] = useState('English');
   const [ttsInput, setTtsInput] = useState('');
   const [ttsLoading, setTtsLoading] = useState(false);
 
-  const [translateInput, setTranslateInput] = useState('');
+  // Translation State
+  const [translateSource, setTranslateSource] = useState('English');
   const [translateTarget, setTranslateTarget] = useState('Saudi Arabic');
+  const [translateInput, setTranslateInput] = useState('');
   const [translateResult, setTranslateResult] = useState('');
   const [translateLoading, setTranslateLoading] = useState(false);
 
@@ -147,32 +161,16 @@ const App: React.FC = () => {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       mediaStreamRef.current = stream;
 
-<<<<<<< HEAD
-      const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-=======
       const ai = new GoogleGenAI({ apiKey: process.env.API_KEY || '' });
       
-      // Enhanced system instruction with multiple reminders
-      const enhancedSystemInstruction = `${dialect.systemPrompt}
-
-=== CRITICAL REMINDER - READ BEFORE EVERY RESPONSE ===
-SESSION LANGUAGE: ${dialect.label}
-TRANSCRIPTION SCRIPT: You MUST use ONLY the correct script for ${dialect.label}
-- DO NOT use any other language's script in transcription
-- DO NOT mix scripts
-- Validate every transcription before sending
-
-This is a ${dialect.label} session. Maintain script consistency at all times.`;
-
->>>>>>> 3b4ddf8 (changes twleve)
       const sessionPromise = ai.live.connect({
         model: 'gemini-2.5-flash-native-audio-preview-12-2025',
         config: {
           responseModalities: [Modality.AUDIO],
           speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Zephyr' } } },
-          systemInstruction: dialect.systemPrompt,
-          inputAudioTranscription: {},
-          outputAudioTranscription: {},
+          systemInstruction: { parts: [{ text: dialect.systemPrompt }] },
+          // This tells the model to pay attention to speech patterns
+          inputAudioTranscription: { model: "google-search" }, 
         },
         callbacks: {
           onopen: () => {
@@ -181,12 +179,12 @@ This is a ${dialect.label} session. Maintain script consistency at all times.`;
             nextStartTimeRef.current = 0;
             
             sessionPromise.then(session => {
-              // FORCED SCRIPT REINFORCEMENT
+              // *** FIX: STRICTLY FORCE LANGUAGE CONTEXT ON CONNECT ***
+              // This ensures the model knows how to transcribe the USER'S input immediately
               session?.sendRealtimeInput({ 
-                text: `[SYSTEM COMMAND]: The session has started. You are in ${dialect.label} mode. 
-                STRICT RULE: Only use Arabic script for transcription. 
-                DO NOT use Hindi/Punjabi/Bengali scripts. 
-                Now, greet the user warmly in ${dialect.label}.` 
+                text: `SETUP: The user is speaking in ${dialect.label}. 
+                IMPERATIVE: Transcribe the user's speech using the correct ${dialect.label} script. 
+                Do not translate the transcription. Keep it in the original language.` 
               });
             });
 
@@ -208,7 +206,6 @@ This is a ${dialect.label} session. Maintain script consistency at all times.`;
           },
           onmessage: async (message: LiveServerMessage) => {
             if (message.serverContent?.inputTranscription) {
-              // Validate transcription script if possible, or just append
               currentInputTranscription.current += message.serverContent.inputTranscription.text;
               setLiveUserSpeech(currentInputTranscription.current);
             }
@@ -287,7 +284,8 @@ This is a ${dialect.label} session. Maintain script consistency at all times.`;
         recorder.onstop = async () => {
           const blob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
           setSttAudioUrl(URL.createObjectURL(blob));
-          processStt(blob);
+          setSttBlob(blob); // Save blob for manual transcription
+          setSttTranscript(""); // Clear previous
         };
         mediaRecorderRef.current = recorder;
         recorder.start();
@@ -298,7 +296,8 @@ This is a ${dialect.label} session. Maintain script consistency at all times.`;
     }
   };
 
-  const processStt = async (blob: Blob) => {
+  const handleManualTranscribe = async () => {
+    if (!sttBlob) return;
     setSttLoading(true);
     try {
       const reader = new FileReader();
@@ -306,15 +305,15 @@ This is a ${dialect.label} session. Maintain script consistency at all times.`;
         const base64 = (reader.result as string).split(',')[1];
         const ai = new GoogleGenAI({ apiKey: process.env.API_KEY || '' });
         const response = await ai.models.generateContent({
-          model: 'gemini-3-flash-preview',
+          model: 'gemini-2.0-flash-exp', // Using a robust model for transcription
           contents: [
-            { text: "Transcribe audio strictly in its original script. No translation. Use the correct script for the language spoken." },
+            { text: `Transcribe this audio. The language spoken is ${sttLanguage}. Output strictly the transcription in the ${sttLanguage} script.` },
             { inlineData: { data: base64, mimeType: 'audio/webm' } }
           ]
         });
-        setSttTranscript(response.text || "No speech detected.");
+        setSttTranscript(response.response.text() || "No speech detected.");
       };
-      reader.readAsDataURL(blob);
+      reader.readAsDataURL(sttBlob);
     } catch (e) {
       setSttTranscript("Transcription failed.");
     } finally {
@@ -327,9 +326,10 @@ This is a ${dialect.label} session. Maintain script consistency at all times.`;
     setTtsLoading(true);
     try {
       const ai = new GoogleGenAI({ apiKey: process.env.API_KEY || '' });
+      // Generate speech via Gemini (Text -> Audio)
       const response = await ai.models.generateContent({
         model: "gemini-2.5-flash-preview-tts",
-        contents: [{ parts: [{ text: ttsInput }] }],
+        contents: [{ parts: [{ text: `Please say the following text in ${ttsLanguage}: ${ttsInput}` }] }],
         config: {
           responseModalities: [Modality.AUDIO],
           speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Kore' } } }
@@ -357,10 +357,12 @@ This is a ${dialect.label} session. Maintain script consistency at all times.`;
     try {
       const ai = new GoogleGenAI({ apiKey: process.env.API_KEY || '' });
       const response = await ai.models.generateContent({
-        model: 'gemini-3-flash-preview',
-        contents: `Translate the following to ${translateTarget}: "${translateInput}"`
+        model: 'gemini-2.0-flash-exp',
+        contents: `Act as a professional translator. Translate the following text from ${translateSource} to ${translateTarget}. Only provide the translated text.
+        
+        Text: "${translateInput}"`
       });
-      setTranslateResult(response.text || "Translation error.");
+      setTranslateResult(response.response.text() || "Translation error.");
     } catch (e) {
       setTranslateResult("Failed to translate.");
     } finally {
@@ -377,8 +379,8 @@ This is a ${dialect.label} session. Maintain script consistency at all times.`;
             <span className="logo-text">Saudi Voice Intelligence</span>
           </div>
           <div className="nav-links">
-            <a href="#agent" onClick={() => setActiveTab('agent')}>Agent</a>
-            <a href="#tools" onClick={() => setActiveTab('stt')}>Utilities</a>
+            <a href="#agent" onClick={() => setActiveTab('agent')}>Talk to Agent</a>
+            <a href="#tools" onClick={() => setActiveTab('stt')}>Try AI Tools</a>
           </div>
         </div>
       </nav>
@@ -388,13 +390,12 @@ This is a ${dialect.label} session. Maintain script consistency at all times.`;
         <div className="hero-content">
           <span className="hero-badge">AI SPEECH PLATFORM</span>
           <h1 className="hero-title">
-            Enterprise<br />Voice AI<br />
-            <span className="gradient-text">Dialect Expert</span>
+            <span className="gradient-text">AI Voice Agent</span>
           </h1>
           <p className="hero-subtitle">Unified support for Telecom billing and Hospital services across 10 regional dialects.</p>
           <div className="hero-buttons">
-            <button onClick={() => setActiveTab('agent')} className="btn btn-accent btn-large">Establish Connection</button>
-            <button onClick={() => setActiveTab('stt')} className="btn btn-outline btn-large">Utilities</button>
+            <button onClick={() => setActiveTab('agent')} className="btn btn-accent btn-large">Talk to Agent</button>
+            <button onClick={() => setActiveTab('stt')} className="btn btn-outline btn-large">Try AI Tools</button>
           </div>
         </div>
       </section>
@@ -406,7 +407,7 @@ This is a ${dialect.label} session. Maintain script consistency at all times.`;
             className={`tab-btn ${activeTab === tab ? 'active' : ''}`}
             onClick={() => setActiveTab(tab)}
           >
-            {tab.toUpperCase()}
+            {tab === 'agent' ? 'AI AGENT' : tab.toUpperCase()}
           </button>
         ))}
       </div>
@@ -420,7 +421,7 @@ This is a ${dialect.label} session. Maintain script consistency at all times.`;
               <div className="agent-header">
                 <div className="agent-avatar">🤖</div>
                 <div className="agent-info">
-                  <h3 style={{fontSize: '1.2rem'}}>{currentDialect.label} Support</h3>
+                  <h3 style={{fontSize: '1.2rem'}}>{currentDialect.label} Agent</h3>
                   <p style={{fontSize: '0.85rem', color: '#64748b'}}>Current Status: <span style={{fontWeight: 700, color: status === 'speaking' ? 'var(--accent-dark)' : 'inherit'}}>{status.toUpperCase()}</span></p>
                 </div>
                 <div className="status-pill">
@@ -441,7 +442,7 @@ This is a ${dialect.label} session. Maintain script consistency at all times.`;
                 
                 <div className="agent-buttons">
                   <button onClick={toggleConnection} className={`btn btn-full btn-large ${isConnected ? 'btn-secondary' : 'btn-accent'}`}>
-                    {isConnected ? 'Disconnect Session' : 'Start Agent'}
+                    {isConnected ? 'Disconnect Session' : 'Talk to Agent'}
                   </button>
                 </div>
 
@@ -462,7 +463,7 @@ This is a ${dialect.label} session. Maintain script consistency at all times.`;
                 {messages.length === 0 && !liveUserSpeech && !liveAssistantSpeech && (
                   <div style={{textAlign: 'center', padding: '5rem 2rem', color: '#94a3b8'}}>
                     <div style={{fontSize: '3rem', marginBottom: '1.5rem'}}>📞</div>
-                    <p>Select a language and establish a connection to begin talking with the AI Assistant.</p>
+                    <p>Select a language and click "Talk to Agent" to begin.</p>
                   </div>
                 )}
                 {messages.map((msg, idx) => (
@@ -473,13 +474,13 @@ This is a ${dialect.label} session. Maintain script consistency at all times.`;
                 ))}
                 {liveUserSpeech && (
                   <div className="message user" style={{opacity: 0.75, border: '1px dashed #000'}}>
-                    <p style={{fontSize: '0.7rem', fontWeight: 800, marginBottom: '4px'}}>Processing Speech...</p>
+                    <p style={{fontSize: '0.7rem', fontWeight: 800, marginBottom: '4px'}}>Listening...</p>
                     <p style={{fontStyle: 'italic'}}>{liveUserSpeech}</p>
                   </div>
                 )}
                 {liveAssistantSpeech && (
                   <div className="message assistant" style={{borderColor: 'var(--accent)', background: '#f7fee7'}}>
-                    <p style={{fontSize: '0.7rem', fontWeight: 800, marginBottom: '4px'}}>Agent Responding...</p>
+                    <p style={{fontSize: '0.7rem', fontWeight: 800, marginBottom: '4px'}}>Agent Speaking...</p>
                     <p><b>{liveAssistantSpeech}</b></p>
                   </div>
                 )}
@@ -491,23 +492,55 @@ This is a ${dialect.label} session. Maintain script consistency at all times.`;
 
       {activeTab === 'stt' && (
         <section className="tools-section">
-          <div className="tool-panel active">
+          <div className="tool-panel active" style={{maxWidth: '1200px'}}>
             <div className="section-header">
               <span className="section-badge">STT ENGINE</span>
               <h2>Speech-to-Text Lab</h2>
-              <p>High-accuracy dialect transcription for business documentation.</p>
+              <p>Record audio and get accurate transcripts in your selected language.</p>
             </div>
-            <div className="audio-upload-zone" style={{background: '#f8fafc', border: '2px dashed #cbd5e1', padding: '3rem'}}>
-              <div style={{fontSize: '3rem', marginBottom: '1.5rem'}}>{sttRecording ? '🔴' : '🎤'}</div>
-              <button onClick={toggleSttRecording} className={`btn btn-large ${sttRecording ? 'btn-secondary' : 'btn-accent'}`}>
-                {sttRecording ? 'Stop Recording' : 'Start Recording'}
-              </button>
-              {sttAudioUrl && <div style={{marginTop: '2rem'}}><audio src={sttAudioUrl} controls style={{width: '100%'}} /></div>}
-            </div>
-            <div className="transcript-box" style={{marginTop: '2rem', background: '#fff'}}>
-              <h4 style={{fontSize: '0.75rem', fontWeight: 800, textTransform: 'uppercase', color: '#94a3b8', marginBottom: '12px'}}>Result</h4>
-              <div style={{fontSize: '1.1rem'}}>
-                {sttLoading ? <span className="loading-dots">Analyzing...</span> : sttTranscript || 'Your text will appear here.'}
+            
+            <div style={{display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '2rem'}}>
+              {/* Left Column: Recording Controls */}
+              <div className="audio-upload-zone" style={{background: '#fff', border: '1px solid #e2e8f0', borderRadius: '16px', padding: '2rem', display: 'flex', flexDirection: 'column', gap: '1.5rem'}}>
+                
+                <div className="language-select-tool">
+                  <label>1. SELECT LANGUAGE</label>
+                  <select value={sttLanguage} onChange={(e) => setSttLanguage(e.target.value)}>
+                    {TOOL_LANGUAGES.map(l => <option key={l} value={l}>{l}</option>)}
+                  </select>
+                </div>
+
+                <div style={{textAlign: 'center', padding: '2rem 0', borderTop: '1px dashed #e2e8f0', borderBottom: '1px dashed #e2e8f0'}}>
+                  <div style={{fontSize: '3rem', marginBottom: '1rem', transition: 'all 0.3s'}}>{sttRecording ? '🔴' : '🎤'}</div>
+                  <button onClick={toggleSttRecording} className={`btn btn-large btn-full ${sttRecording ? 'btn-secondary' : 'btn-primary'}`}>
+                    {sttRecording ? 'Stop Recording' : '2. Start Recording'}
+                  </button>
+                  {sttAudioUrl && (
+                     <div style={{marginTop: '1.5rem'}}>
+                        <audio src={sttAudioUrl} controls style={{width: '100%'}} />
+                     </div>
+                  )}
+                </div>
+
+                <button 
+                  onClick={handleManualTranscribe} 
+                  disabled={!sttAudioUrl || sttLoading || sttRecording}
+                  className="btn btn-accent btn-large btn-full"
+                >
+                  {sttLoading ? 'Transcribing...' : '3. Transcribe Audio'}
+                </button>
+              </div>
+
+              {/* Right Column: Transcript Result */}
+              <div className="transcript-box" style={{background: '#f8fafc', height: '100%', minHeight: '400px', display: 'flex', flexDirection: 'column'}}>
+                <h4 style={{fontSize: '0.75rem', fontWeight: 800, textTransform: 'uppercase', color: '#94a3b8', marginBottom: '12px'}}>Transcription Result</h4>
+                <div style={{fontSize: '1.1rem', flex: 1, whiteSpace: 'pre-wrap'}}>
+                  {sttLoading ? (
+                    <div style={{display: 'flex', alignItems: 'center', gap: '10px', color: '#666'}}>
+                      <span className="status-dot speaking"></span> Generating transcript in {sttLanguage}...
+                    </div>
+                  ) : sttTranscript || <span style={{color: '#cbd5e1'}}>Transcript will appear here after you click "Transcribe Audio"...</span>}
+                </div>
               </div>
             </div>
           </div>
@@ -520,17 +553,25 @@ This is a ${dialect.label} session. Maintain script consistency at all times.`;
             <div className="section-header">
               <span className="section-badge">TTS ENGINE</span>
               <h2>Voice Synthesis Hub</h2>
-              <p>Convert text to human-like voice with natural dialect inflections.</p>
+              <p>Convert text to human-like voice.</p>
             </div>
+            
+            <div className="language-select-tool">
+              <label>SELECT LANGUAGE TO SPEAK</label>
+              <select value={ttsLanguage} onChange={(e) => setTtsLanguage(e.target.value)}>
+                 {TOOL_LANGUAGES.map(l => <option key={l} value={l}>{l}</option>)}
+              </select>
+            </div>
+
             <textarea 
               className="transcript-box" 
               style={{width: '100%', minHeight: '200px', resize: 'none', background: '#fff', padding: '1.5rem', fontSize: '1.1rem'}}
-              placeholder="Enter text here to generate high-fidelity audio..."
+              placeholder={`Enter text in ${ttsLanguage} here...`}
               value={ttsInput}
               onChange={(e) => setTtsInput(e.target.value)}
             />
             <button onClick={handleTts} disabled={ttsLoading || !ttsInput.trim()} className="btn btn-accent btn-full btn-large" style={{marginTop: '2rem'}}>
-              {ttsLoading ? 'Processing...' : 'Generate and Play Audio'}
+              {ttsLoading ? 'Generating Audio...' : 'Generate Speech'}
             </button>
           </div>
         </section>
@@ -542,34 +583,43 @@ This is a ${dialect.label} session. Maintain script consistency at all times.`;
             <div className="section-header">
               <span className="section-badge">TRANSLATION</span>
               <h2>Enterprise Translator</h2>
-              <p>Specialized Arabic and regional dialect translation for global operations.</p>
+              <p>Professional AI Translation.</p>
             </div>
             <div className="tool-grid">
               <div style={{display: 'flex', flexDirection: 'column', gap: '1.5rem'}}>
+                
+                {/* Source and Target Selectors */}
+                <div style={{display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem'}}>
+                    <div className="language-select-tool">
+                        <label>FROM</label>
+                        <select value={translateSource} onChange={(e) => setTranslateSource(e.target.value)}>
+                            {TOOL_LANGUAGES.map(l => <option key={l} value={l}>{l}</option>)}
+                        </select>
+                    </div>
+                    <div className="language-select-tool">
+                        <label>TO</label>
+                        <select value={translateTarget} onChange={(e) => setTranslateTarget(e.target.value)}>
+                            {TOOL_LANGUAGES.map(l => <option key={l} value={l}>{l}</option>)}
+                        </select>
+                    </div>
+                </div>
+
                 <textarea 
                   className="transcript-box" 
                   style={{width: '100%', minHeight: '220px', resize: 'none', background: '#fff', padding: '1rem', fontSize: '1rem'}}
-                  placeholder="Text to translate..."
+                  placeholder={`Type ${translateSource} text here...`}
                   value={translateInput}
                   onChange={(e) => setTranslateInput(e.target.value)}
                 />
-                <select 
-                  className="transcript-box" 
-                  style={{padding: '1rem', minHeight: 'auto'}}
-                  value={translateTarget}
-                  onChange={(e) => setTranslateTarget(e.target.value)}
-                >
-                  <option value="Saudi Arabic">Saudi Arabic</option>
-                  <option value="English">English</option>
-                  <option value="Urdu">Urdu</option>
-                  <option value="Hindi">Hindi</option>
-                </select>
+                
                 <button onClick={handleTranslate} disabled={translateLoading || !translateInput.trim()} className="btn btn-accent btn-full btn-large">
                   {translateLoading ? 'Translating...' : 'Translate Now'}
                 </button>
               </div>
               <div className="transcript-box" style={{background: '#f1f5f9', minHeight: '220px'}}>
-                <h4 style={{fontSize: '0.75rem', fontWeight: 800, textTransform: 'uppercase', color: '#94a3b8', marginBottom: '12px'}}>Translated Output</h4>
+                <h4 style={{fontSize: '0.75rem', fontWeight: 800, textTransform: 'uppercase', color: '#94a3b8', marginBottom: '12px'}}>
+                    Translated to {translateTarget}
+                </h4>
                 <div style={{fontSize: '1.1rem', color: '#1e293b'}}>
                   {translateResult || 'The result will appear here.'}
                 </div>
