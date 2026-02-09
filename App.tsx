@@ -186,7 +186,7 @@ const App: React.FC = () => {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       mediaStreamRef.current = stream;
 
-      const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+      const ai = new GoogleGenAI({ apiKey: process.env.API_KEY || '' });
       
       // Enhanced system instruction with multiple reminders
       const enhancedSystemInstruction = `${dialect.systemPrompt}
@@ -364,7 +364,7 @@ Now greet the user in ${dialect.label}.`
       const reader = new FileReader();
       reader.onloadend = async () => {
         const base64 = (reader.result as string).split(',')[1];
-        const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+        const ai = new GoogleGenAI({ apiKey: process.env.API_KEY || '' });
         const response = await ai.models.generateContent({
           model: 'gemini-3-flash-preview',
           contents: [
@@ -386,7 +386,7 @@ Now greet the user in ${dialect.label}.`
     if (!ttsInput.trim()) return;
     setTtsLoading(true);
     try {
-      const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+      const ai = new GoogleGenAI({ apiKey: process.env.API_KEY || '' });
       const response = await ai.models.generateContent({
         model: "gemini-2.5-flash-preview-tts",
         contents: [{ parts: [{ text: ttsInput }] }],
@@ -415,7 +415,7 @@ Now greet the user in ${dialect.label}.`
     if (!translateInput.trim()) return;
     setTranslateLoading(true);
     try {
-      const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+      const ai = new GoogleGenAI({ apiKey: process.env.API_KEY || '' });
       const response = await ai.models.generateContent({
         model: 'gemini-3-flash-preview',
         contents: `Translate the following to ${translateTarget}: "${translateInput}"`
@@ -451,7 +451,7 @@ Now greet the user in ${dialect.label}.`
             Enterprise<br />Voice AI<br />
             <span className="gradient-text">Dialect Expert</span>
           </h1>
-          <p className="hero-subtitle">Unified support for Telecom billing and Hospital services</p>
+          <p className="hero-subtitle">Unified support for Telecom billing and Hospital services across 10 regional dialects.</p>
           <div className="hero-buttons">
             <button onClick={() => setActiveTab('agent')} className="btn btn-accent btn-large">Establish Connection</button>
             <button onClick={() => setActiveTab('stt')} className="btn btn-outline btn-large">Utilities</button>
